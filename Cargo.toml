@@ -1,0 +1,20 @@
+[package]
+name = "sshtui"
+version = "0.1.0"
+edition = "2024"
+description = "A TUI wrapper around the system ssh client that stores hosts in ~/.ssh/config"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+crossterm = "0.29.0"
+glob = "0.3.4"
+ratatui = "0.30.2"
+similar = "3.2.1"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+unicode-width = "0.2.3"
+which = "8.0.6"
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.18.0", default-features = false }
