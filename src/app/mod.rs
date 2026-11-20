@@ -14,7 +14,7 @@ use crate::config::{
     ConfigSet, HostEntry, WriteError, block_fields, plan_add, plan_delete, plan_edit,
 };
 use crate::dialog::PickOutcome;
-use crate::ssh::args::{ArgsError, ConnectTarget, connect_args, preview};
+use crate::ssh::args::{ArgsError, ConnectTarget, config_file_args, connect_args, preview};
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig, find_mismatches};
 use crate::validate::ValidationError;
 
@@ -203,11 +203,27 @@ impl<B: Backend> App<B> {
 
     /// Returns the live SSH command preview for the active form, if present.
     pub fn form_preview(&self) -> Option<Result<String, String>> {
+        self.preview_with(|target| self.connection_args(target))
+    }
+
+    /// Previews the command using the loaded config snapshot without checking the filesystem.
+    pub(crate) fn loaded_form_preview(&self) -> Option<Result<String, String>> {
+        self.preview_with(|target| {
+            let paths = self.backend.paths();
+            let root = paths.config_file();
+            let has_root = self.config.files.iter().any(|file| file.path == root);
+            connect_args(paths, &config_file_args(paths, has_root), target)
+        })
+    }
+
+    fn preview_with(
+        &self,
+        args: impl FnOnce(&ConnectTarget) -> Result<Vec<OsString>, ArgsError>,
+    ) -> Option<Result<String, String>> {
         let form = self.form()?;
         Some(match form.first_error(&self.config.hosts) {
             Some((_, error)) => Err(error.to_string()),
-            None => self
-                .connection_args(&form.target())
+            None => args(&form.target())
                 .map(|args| preview(&args))
                 .map_err(|error| error.to_string()),
         })

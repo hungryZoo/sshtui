@@ -7,6 +7,7 @@ pub mod dialog;
 pub mod keys;
 pub mod paths;
 pub mod ssh;
+pub mod system;
 pub mod tui;
 pub mod ui;
 pub mod validate;

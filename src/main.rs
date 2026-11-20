@@ -1,4 +1,11 @@
+use std::io::{self, IsTerminal};
 use std::process::ExitCode;
+
+use sshtui::app::{App, Exit};
+use sshtui::paths::SshPaths;
+use sshtui::ssh::exec::{find_ssh, run_interactive};
+use sshtui::system::SystemBackend;
+use sshtui::{dialog, tui};
 
 #[derive(Debug, PartialEq, Eq)]
 enum CliAction {
@@ -26,10 +33,10 @@ fn main() -> std::process::ExitCode {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     match parse_args(&args) {
-        CliAction::Run => {
-            eprintln!("sshtui: the TUI is not implemented yet");
+        CliAction::Run => run().unwrap_or_else(|error| {
+            eprintln!("sshtui: {error}");
             ExitCode::FAILURE
-        }
+        }),
         CliAction::Version => {
             println!("sshtui {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -38,11 +45,29 @@ fn main() -> std::process::ExitCode {
             println!("Usage: sshtui [OPTIONS]");
             println!("  -h, --help     Print help");
             println!("  -V, --version  Print version");
+            println!("  SSHTUI_SSH_DIR  Override the SSH directory (default: ~/.ssh)");
             ExitCode::SUCCESS
         }
         CliAction::Invalid(arg) => {
             eprintln!("sshtui: unknown argument {arg:?}");
             ExitCode::from(2)
+        }
+    }
+}
+
+fn run() -> anyhow::Result<ExitCode> {
+    let paths = SshPaths::from_env()?;
+    let ssh = find_ssh()?;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        anyhow::bail!("an interactive terminal is required");
+    }
+
+    let backend = SystemBackend::new(paths, ssh.clone(), dialog::system_picker());
+    match tui::run(App::new(backend))? {
+        Exit::Quit => Ok(ExitCode::SUCCESS),
+        Exit::Connect(args) => {
+            let code = run_interactive(&ssh, &args)?;
+            Ok(u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from))
         }
     }
 }

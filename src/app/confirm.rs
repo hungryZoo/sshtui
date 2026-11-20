@@ -137,4 +137,9 @@ impl NoticeState {
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
+
+    /// Returns whether accepting the notice starts an SSH connection.
+    pub fn connects(&self) -> bool {
+        self.connect_alias.is_some()
+    }
 }
