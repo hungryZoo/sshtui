@@ -356,6 +356,24 @@ mod tests {
     }
 
     #[test]
+    fn expands_relative_include_globs_inside_a_dot_ssh_directory() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let ssh = home.join(".ssh");
+        let paths = SshPaths::resolve(Some(ssh.as_os_str()), Some(&home), temp.path()).unwrap();
+        let root = paths.config_file();
+        let included = ssh.join("conf.d/a.conf");
+        write(&root, b"Include conf.d/*.conf\n");
+        write(&included, b"Host included\n");
+
+        let config = load(&paths).unwrap();
+        assert_eq!(file_paths(&config), [root.as_path(), included.as_path()]);
+        assert_eq!(host_names(&config), ["included"]);
+        assert_eq!(config.files[1].parsed.bytes(), b"Host included\n");
+        assert_eq!(config.warnings, []);
+    }
+
+    #[test]
     fn resolves_nested_relative_includes_from_the_ssh_directory() {
         let (_temp, paths) = fixture();
         let ssh = paths.ssh_dir();
