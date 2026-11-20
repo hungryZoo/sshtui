@@ -7,16 +7,23 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{ConfirmState, KeyPickerState, NoticeState};
 use crate::config::{DiffLine, DiffTag};
+use crate::paths::SshPaths;
 
-use super::{below, row, selectable_list};
+use super::{below, row, selectable_list, wrapped_lines};
 
-pub(super) fn confirm(frame: &mut Frame, state: &ConfirmState, area: Rect) {
+pub(super) fn confirm(frame: &mut Frame, state: &ConfirmState, paths: &SshPaths, area: Rect) {
     if area.is_empty() {
         return;
     }
-    frame.render_widget(Line::from(state.path().to_string_lossy()), row(area, 0));
+    let path = paths.abbreviate_home(state.path());
+    let path_lines = wrapped_lines(&path, area.width, area.height.min(2));
+    let path_height = path_lines.len() as u16;
+    frame.render_widget(
+        Paragraph::new(path_lines),
+        Rect::new(area.x, area.y, area.width, path_height),
+    );
 
-    let mut rows = below(area, 1).rows();
+    let mut rows = below(area, path_height).rows();
     let mut skip = state.scroll();
     let mut shown_hunk = false;
     for hunk in state.hunks() {

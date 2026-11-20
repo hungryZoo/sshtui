@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListState};
+use ratatui::widgets::{List, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, Mode, StatusLevel, TextInput};
@@ -19,12 +19,20 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
     if area.is_empty() {
         return;
     }
-    let body = Rect::new(
-        area.x,
-        area.y.saturating_add(1),
-        area.width,
-        area.height.saturating_sub(3),
-    );
+    let mut body = below(area, 1);
+    body.height = body.height.saturating_sub(1);
+    let status = app.status().map(|status| {
+        let lines = wrapped_lines(&status.text, area.width, body.height.min(3));
+        let height = lines.len() as u16;
+        body.height -= height;
+        let style = match status.level {
+            StatusLevel::Info => Style::default(),
+            StatusLevel::Warning => Style::default().fg(Color::Yellow),
+            StatusLevel::Error => Style::default().fg(Color::Red),
+        };
+        let status_area = Rect::new(body.x, body.bottom(), body.width, height);
+        (Paragraph::new(lines).style(style), status_area)
+    });
 
     let (title, help) = match app.mode() {
         Mode::List => {
@@ -36,7 +44,7 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
             (form::title(state), form::help(state))
         }
         Mode::Confirm(state) => {
-            overlays::confirm(frame, state, body);
+            overlays::confirm(frame, state, app.backend().paths(), body);
             (
                 state.title(),
                 "y/Enter confirm  n/Esc cancel  Up/Down scroll",
@@ -61,22 +69,64 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
     };
 
     frame.render_widget(Line::from(title).bold(), row(area, 0));
-    if area.height >= 3
-        && let Some(status) = app.status()
-    {
-        let style = match status.level {
-            StatusLevel::Info => Style::default(),
-            StatusLevel::Warning => Style::default().fg(Color::Yellow),
-            StatusLevel::Error => Style::default().fg(Color::Red),
-        };
-        frame.render_widget(
-            Line::from(status.text.as_str()).style(style),
-            row(area, area.height - 2),
-        );
+    if let Some((status, status_area)) = status {
+        frame.render_widget(status, status_area);
     }
     if area.height >= 2 {
         frame.render_widget(Line::from(help).dim(), row(area, area.height - 1));
     }
+}
+
+fn wrapped_lines(text: &str, width: u16, max_rows: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    let max_rows = usize::from(max_rows);
+    let mut lines = Vec::new();
+    if width == 0 || max_rows == 0 {
+        return lines;
+    }
+
+    for logical_line in text.lines() {
+        let first_row = lines.len();
+        let mut line = String::new();
+        let mut cells = 0;
+        let mut word_break = None;
+        'graphemes: for grapheme in Span::raw(logical_line).styled_graphemes(Style::default()) {
+            let symbol = grapheme.symbol;
+            let symbol_width = symbol.width();
+            if symbol_width > width {
+                continue;
+            }
+            let whitespace = grapheme.is_whitespace();
+            while cells + symbol_width > width {
+                // Move the partial word to the next row when there is a word boundary.
+                let (offset, prefix_width) = word_break
+                    .take()
+                    .filter(|_| !whitespace)
+                    .unwrap_or((line.len(), cells));
+                let tail = line.split_off(offset);
+                lines.push(Line::from(std::mem::replace(&mut line, tail)));
+                cells -= prefix_width;
+                if lines.len() == max_rows {
+                    return lines;
+                }
+                if whitespace {
+                    continue 'graphemes;
+                }
+            }
+            line.push_str(symbol);
+            cells += symbol_width;
+            if whitespace {
+                word_break = Some((line.len(), cells));
+            }
+        }
+        if !line.is_empty() || lines.len() == first_row {
+            lines.push(Line::from(line));
+        }
+        if lines.len() == max_rows {
+            break;
+        }
+    }
+    lines
 }
 
 fn row(area: Rect, offset: u16) -> Rect {

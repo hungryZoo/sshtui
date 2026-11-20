@@ -71,7 +71,6 @@ fn host_name(host: HostRow<'_>) -> Line<'_> {
 
 fn render_detail<B: Backend>(frame: &mut Frame, app: &App<B>, host: HostRow<'_>, area: Rect) {
     let mut lines = vec![Line::from(format!("Alias: {}", host.entry.name))];
-    let mut keys = None;
     match app.selected_effective() {
         Some(Ok(config)) => {
             lines.extend([
@@ -82,7 +81,15 @@ fn render_detail<B: Backend>(frame: &mut Frame, app: &App<B>, host: HostRow<'_>,
                 )),
                 Line::from(format!("Port: {}", config.port.as_deref().unwrap_or("-"))),
             ]);
-            keys = Some(&config.identity_files);
+            if config.identity_files.is_empty() {
+                lines.push(Line::from("Key file: -"));
+            }
+            lines.extend(
+                config
+                    .identity_files
+                    .iter()
+                    .map(|key| Line::from(format!("Key file: {key}"))),
+            );
         }
         Some(Err(error)) => lines.push(Line::from(format!("Effective settings: {error}")).red()),
         None => {}
@@ -94,15 +101,6 @@ fn render_detail<B: Backend>(frame: &mut Frame, app: &App<B>, host: HostRow<'_>,
     )));
     if host.read_only {
         lines.push(Line::from("Read-only file").yellow());
-    }
-    if let Some(keys) = keys {
-        if keys.is_empty() {
-            lines.push(Line::from("Key file: -"));
-        }
-        lines.extend(
-            keys.iter()
-                .map(|key| Line::from(format!("Key file: {key}"))),
-        );
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }

@@ -17,6 +17,8 @@ use crate::paths::SshPaths;
 use crate::ssh::effective::EffectiveConfig;
 
 const HOSTS: &str = "# Saved hosts\nHost web\nHost db\nHost queue\n";
+const MANY_HOSTS: &str =
+    "Host web\nHost db\nHost queue\nHost cache\nHost proxy\nHost mail\nHost files\nHost git\n";
 
 /// Backend fixture with a temporary config and predictable effective values.
 pub(crate) struct FakeBackend {
@@ -27,13 +29,23 @@ pub(crate) struct FakeBackend {
     keys: Vec<KeyInfo>,
     unavailable: Option<String>,
     hidden_hint: Option<String>,
+    load_error: Option<String>,
 }
 
 impl FakeBackend {
     /// Creates a fake session from an optional config in a temporary home.
     pub(crate) fn new(contents: &str) -> Self {
+        Self::with_ssh_dir(contents, None)
+    }
+
+    fn with_ssh_dir(contents: &str, dir: Option<&str>) -> Self {
         let temp = tempdir().unwrap();
-        let paths = SshPaths::resolve(None, Some(temp.path()), temp.path()).unwrap();
+        let paths = SshPaths::resolve(
+            dir.map(std::ffi::OsStr::new),
+            Some(temp.path()),
+            temp.path(),
+        )
+        .unwrap();
         if !contents.is_empty() {
             fs::create_dir(paths.ssh_dir()).unwrap();
             fs::write(paths.config_file(), contents).unwrap();
@@ -51,6 +63,7 @@ impl FakeBackend {
             keys: Vec::new(),
             unavailable: None,
             hidden_hint: None,
+            load_error: None,
         }
     }
 
@@ -80,6 +93,9 @@ impl Backend for FakeBackend {
     }
 
     fn load_config(&self) -> Result<ConfigSet, String> {
+        if let Some(error) = &self.load_error {
+            return Err(error.clone());
+        }
         config::load(&self.paths).map_err(|error| error.to_string())
     }
 
@@ -195,6 +211,25 @@ fn list_shows_filter_count_and_empty_results() {
 
     press(&mut app, KeyCode::Enter);
     contains(&draw(&app, 80, 20), &["/webxxxxx", "No matching hosts"]);
+}
+
+#[test]
+fn list_shows_all_key_files_above_the_source_and_read_only_label() {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.read_only = true;
+    let rows = screen(&draw(&App::new(backend), 100, 20));
+    let positions = [
+        "Alias: web",
+        "User: alice",
+        "Address: www.example.com",
+        "Port: 2222",
+        "Key file: ~/.ssh/first",
+        "Key file: ~/.ssh/second",
+        "Source: ~/.ssh/config:2",
+        "Read-only file",
+    ]
+    .map(|label| rows.iter().position(|row| row.contains(label)).unwrap());
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 #[test]
@@ -337,9 +372,13 @@ fn long_wide_input_scrolls_without_hiding_the_cursor() {
 }
 
 fn edit_confirmation() -> App<FakeBackend> {
-    let mut app = App::new(FakeBackend::new(
+    confirm_edit(FakeBackend::new(
         "Host web\n  HostName www.example.com\n  User alice\n  Port 2222\n",
-    ));
+    ))
+}
+
+fn confirm_edit(backend: FakeBackend) -> App<FakeBackend> {
+    let mut app = App::new(backend);
     press(&mut app, KeyCode::Char('e'));
     set_field(&mut app, FormField::User, "deploy");
     press(&mut app, KeyCode::Enter);
@@ -350,13 +389,12 @@ fn edit_confirmation() -> App<FakeBackend> {
 #[test]
 fn confirmation_shows_numbered_colored_diff_and_scrolls_by_diff_lines() {
     let mut app = edit_confirmation();
-    let path = app.backend().paths().config_file();
     let view = draw(&app, 120, 16);
     contains(
         &view,
         &[
             "Save web",
-            &path.to_string_lossy(),
+            "~/.ssh/config",
             "   3      -   User alice",
             "        3 +   User deploy",
             "y/Enter confirm  n/Esc cancel  Up/Down scroll",
@@ -368,6 +406,25 @@ fn confirmation_shows_numbered_colored_diff_and_scrolls_by_diff_lines() {
     press(&mut app, KeyCode::Down);
     let view = draw(&app, 120, 16);
     assert!(screen(&view)[2].contains("HostName"));
+}
+
+#[test]
+fn confirmation_abbreviates_a_path_under_the_home_directory() {
+    let app = confirm_edit(FakeBackend::with_ssh_dir(HOSTS, Some("work-ssh")));
+    let rows = screen(&draw(&app, 80, 16));
+    assert_eq!(rows[1], "~/work-ssh/config");
+}
+
+#[test]
+fn confirmation_wraps_the_path_at_cell_width_and_caps_it_at_two_rows() {
+    let dir = format!("{}한{}", "a".repeat(27), "b".repeat(50));
+    let app = confirm_edit(FakeBackend::with_ssh_dir(HOSTS, Some(&dir)));
+    let view = draw(&app, 30, 16);
+    let rows = screen(&view);
+    assert_eq!(rows[1], format!("~/{}", "a".repeat(27)));
+    assert_eq!(view.buffer()[(0, 2)].symbol(), "한");
+    assert_eq!(rows[2], format!("한 {}", "b".repeat(28)));
+    assert!(rows[3].contains("# Saved hosts"), "{rows:?}");
 }
 
 #[test]
@@ -451,6 +508,86 @@ fn status_uses_the_penultimate_row_and_severity_colors() {
         let view = draw(&app, 100, 20);
         assert!(screen(&view)[18].contains(message));
         assert_eq!(view.buffer()[(0, 18)].fg, color);
+    }
+}
+
+#[test]
+fn status_wraps_a_long_unbroken_path_at_width_forty() {
+    let path = format!("/{}", "x".repeat(48));
+    let message = format!("{path} was changed by another program");
+    assert_eq!(message.len(), 80);
+    let mut backend = FakeBackend::new("");
+    backend.load_error = Some(message);
+    let app = App::new(backend);
+    let rows = screen(&draw(&app, 40, 16));
+    assert_eq!(rows[13], path[..40]);
+    assert!(
+        rows.join(" ").contains("was changed by another program"),
+        "{rows:?}"
+    );
+    assert!(rows[14].ends_with("another program"));
+
+    let narrower = screen(&draw(&app, 39, 16));
+    assert!(narrower[13].ends_with("another"));
+    assert_eq!(narrower[14], "program");
+}
+
+#[test]
+fn list_gives_up_no_rows_without_status_and_one_row_for_short_status() {
+    let mut app = App::new(FakeBackend::new(MANY_HOSTS));
+    let rows = screen(&draw(&app, 80, 7));
+    for (row, host) in rows[1..6]
+        .iter()
+        .zip(["web", "db", "queue", "cache", "proxy"])
+    {
+        assert_eq!(row.split_whitespace().next(), Some(host));
+    }
+
+    press(&mut app, KeyCode::Char('r'));
+    let rows = screen(&draw(&app, 80, 7));
+    for (row, host) in rows[1..5].iter().zip(["web", "db", "queue", "cache"]) {
+        assert_eq!(row.split_whitespace().next(), Some(host));
+    }
+    assert_eq!(rows[5], "Reloaded");
+    assert!(!rows.iter().any(|row| row.starts_with("proxy")));
+}
+
+fn stale_edit() -> App<FakeBackend> {
+    let dir = "x".repeat(150);
+    let mut app = confirm_edit(FakeBackend::with_ssh_dir(MANY_HOSTS, Some(&dir)));
+    fs::write(
+        app.backend().paths().config_file(),
+        format!("# externally changed\n{MANY_HOSTS}"),
+    )
+    .unwrap();
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.status().unwrap().text.ends_with("reloaded, try again"));
+    app
+}
+
+#[test]
+fn status_uses_at_most_three_rows_without_overwriting_body_or_help() {
+    let app = stale_edit();
+    let view = draw(&app, 40, 8);
+    let rows = screen(&view);
+    assert!(rows[1].starts_with("web"));
+    assert!(rows[2].starts_with("db"));
+    assert!(rows[3].starts_with("queue"));
+    for y in 4..7 {
+        assert!(!rows[usize::from(y)].is_empty());
+        assert_eq!(view.buffer()[(0, y)].fg, Color::Red);
+    }
+    assert!(!rows.join(" ").contains("reloaded, try again"));
+    assert!(rows[7].starts_with("Enter connect"));
+}
+
+#[test]
+fn long_status_renders_in_small_terminals() {
+    let app = stale_edit();
+    for (width, height) in [(1, 1), (5, 2), (20, 5)] {
+        let rows = screen(&draw(&app, width, height));
+        assert!(rows[0].starts_with(&"sshtui"[..usize::from(width.min(6))]));
     }
 }
 
