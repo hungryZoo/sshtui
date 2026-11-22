@@ -169,7 +169,35 @@ fn render_help<B: Backend>(
     app: &App<B>,
     hover: HoverFrame<'_>,
 ) {
-    for (index, &(key, description, code)) in hints.iter().enumerate() {
+    const GAP: u16 = 3;
+
+    let pair_width = |index, (key, description, _): &KeyHint| {
+        key.width() + description.width() + if index == 0 { 3 } else { 1 }
+    };
+    let gap = usize::from(GAP);
+    let available = usize::from(area.width);
+    let last = hints.len().saturating_sub(1);
+    let mut prefix = last;
+    if last >= 2 && pair_width(0, &hints[0]) + gap + pair_width(last, &hints[last]) <= available {
+        let mut total = hints
+            .iter()
+            .enumerate()
+            .map(|(index, hint)| pair_width(index, hint))
+            .sum::<usize>()
+            + last * gap;
+        while total > available {
+            prefix -= 1;
+            total -= pair_width(prefix, &hints[prefix]) + gap;
+        }
+    }
+
+    for (index, hint) in hints[..prefix].iter().chain(&hints[last..]).enumerate() {
+        let width = pair_width(index, hint);
+        if width > usize::from(area.width) {
+            break;
+        }
+        let width = width as u16;
+        let &(key, description, code) = hint;
         let t = code
             .filter(|_| index != 0 || enabled)
             .map_or(0.0, |code| intensity(hover, HoverKey::Key(code)));
@@ -194,10 +222,6 @@ fn render_help<B: Backend>(
                 theme.hover_background(PLAIN, ROW, t),
             )
         };
-        let width = (key.width() + 1 + description.width()) as u16;
-        if width > area.width {
-            break;
-        }
         let rect = left(area, width);
         frame.render_widget(
             Line::from(vec![
@@ -211,7 +235,7 @@ fn render_help<B: Backend>(
         if let Some(code) = code {
             hits.add(rect, ClickTarget::Key(code));
         }
-        area = right_of(area, width.saturating_add(3));
+        area = right_of(area, width.saturating_add(GAP));
     }
 }
 fn styled_wrapped(text: &str, width: u16, max_rows: u16, style: Style) -> Vec<Line<'static>> {

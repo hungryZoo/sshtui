@@ -8,20 +8,22 @@ mod list;
 mod update;
 
 use std::ffi::OsString;
+use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::config::{
-    ConfigSet, HostEntry, WriteError, block_fields, plan_add, plan_delete, plan_edit,
+    ConfigSet, HostEntry, WriteError, WriteOutcome, block_fields, plan_add, plan_delete, plan_edit,
 };
 use crate::dialog::PickOutcome;
+use crate::known_hosts;
 use crate::ssh::args::{ArgsError, ConnectTarget, config_file_args, connect_args, preview};
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig, find_mismatches};
 use crate::update::UpdatePlan;
 use crate::validate::ValidationError;
 
 pub use self::backend::Backend;
-pub use self::confirm::{ConfirmState, KeyPickerState, NoticeState};
+pub use self::confirm::{ConfirmKind, ConfirmState, KeyPickerState, NoticeState};
 pub use self::form::{FormField, FormKind, FormState};
 pub use self::input::TextInput;
 pub use self::list::HostRow;
@@ -435,6 +437,7 @@ impl<B: Backend> App<B> {
             KeyCode::Char('n') => return Mode::Form(FormState::new()),
             KeyCode::Char('e') => return self.edit_selected(),
             KeyCode::Char('d') => return self.delete_selected(),
+            KeyCode::Char('x') => return self.forget_selected(),
             KeyCode::Char('/') => self.list.filtering = true,
             KeyCode::Char('r') => {
                 self.reload_selected();
@@ -521,6 +524,41 @@ impl<B: Backend> App<B> {
             )),
             Err(error) => {
                 self.set_status(StatusLevel::Error, error.to_string());
+                Mode::List
+            }
+        }
+    }
+
+    fn forget_selected(&mut self) -> Mode {
+        let Some(entry) = self.list.selected(&self.config) else {
+            return Mode::List;
+        };
+        let alias = entry.name.clone();
+        let name = match self.list.effective(&self.backend, &alias) {
+            Ok(effective) => known_hosts::lookup_name_for(&alias, effective),
+            Err(error) => {
+                let message = format!("Cannot resolve {alias}: {error}");
+                self.set_status(StatusLevel::Error, message);
+                return Mode::List;
+            }
+        };
+        match self.backend.plan_forget(&name) {
+            Ok(Some(plan)) => Mode::Confirm(ConfirmState::new(
+                plan.pending,
+                alias,
+                ConfirmAction::Forget {
+                    name: plan.name,
+                    removed: plan.removed,
+                },
+            )),
+            Ok(None) => {
+                let paths = self.backend.paths();
+                let path = paths.abbreviate_home(&known_hosts::file_path(paths));
+                self.set_status(StatusLevel::Info, format!("No entry for {name} in {path}"));
+                Mode::List
+            }
+            Err(error) => {
+                self.set_status(StatusLevel::Error, error);
                 Mode::List
             }
         }
@@ -662,7 +700,7 @@ impl<B: Backend> App<B> {
                 KeyCode::Char('n') | KeyCode::Esc => {
                     return match confirm.action {
                         ConfirmAction::Edit(form) => Mode::Form(form),
-                        ConfirmAction::Delete => Mode::List,
+                        ConfirmAction::Delete | ConfirmAction::Forget { .. } => Mode::List,
                     };
                 }
                 KeyCode::Up => confirm.up(false),
@@ -682,24 +720,25 @@ impl<B: Backend> App<B> {
             alias,
             ..
         } = confirm;
-        match self.backend.commit(&pending) {
+        let result = self.backend.commit(&pending);
+        let (verb, form) = match action {
+            ConfirmAction::Edit(form) => ("Saved", Some(form)),
+            ConfirmAction::Delete => ("Deleted", None),
+            ConfirmAction::Forget { name, removed } => {
+                return self.finish_forget(result, &name, removed);
+            }
+        };
+        match result {
             Ok(outcome) => {
                 self.reload(Some(&alias));
                 if self.status.is_none() {
-                    let verb = match action {
-                        ConfirmAction::Edit(_) => "Saved",
-                        ConfirmAction::Delete => "Deleted",
-                    };
-                    let backup = outcome
-                        .backup
-                        .as_ref()
-                        .map_or_else(|| "none".into(), |path| path.display().to_string());
+                    let backup = backup_description(outcome.backup.as_deref());
                     self.set_status(
                         StatusLevel::Info,
                         format!("{verb} {alias} (backup: {backup})"),
                     );
                 }
-                if let ConfirmAction::Edit(form) = action {
+                if let Some(form) = form {
                     let mismatches = self.mismatch_lines(&alias, &form.expected());
                     if !mismatches.is_empty() {
                         return Mode::Notice(NoticeState::new(mismatches, None));
@@ -716,6 +755,35 @@ impl<B: Backend> App<B> {
                     ),
                 );
             }
+            Err(error) => self.set_status(StatusLevel::Error, error.to_string()),
+        }
+        Mode::List
+    }
+
+    fn finish_forget(
+        &mut self,
+        result: Result<WriteOutcome, WriteError>,
+        name: &str,
+        removed: usize,
+    ) -> Mode {
+        match result {
+            Ok(outcome) => {
+                let backup = backup_description(outcome.backup.as_deref());
+                let entries = if removed == 1 { "entry" } else { "entries" };
+                self.set_status(
+                    StatusLevel::Info,
+                    format!(
+                        "Removed {removed} known_hosts {entries} for {name} (backup: {backup})"
+                    ),
+                );
+            }
+            Err(WriteError::Stale { path }) => self.set_status(
+                StatusLevel::Error,
+                format!(
+                    "{} was changed by another program; press x to try again",
+                    path.display()
+                ),
+            ),
             Err(error) => self.set_status(StatusLevel::Error, error.to_string()),
         }
         Mode::List
@@ -766,6 +834,10 @@ impl<B: Backend> App<B> {
         }
         Mode::Notice(notice)
     }
+}
+
+fn backup_description(backup: Option<&Path>) -> String {
+    backup.map_or_else(|| "none".into(), |path| path.display().to_string())
 }
 
 #[cfg(test)]

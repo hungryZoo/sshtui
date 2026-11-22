@@ -7,6 +7,7 @@ use crate::app::Backend;
 use crate::config::{self, ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, FilePicker, PickOutcome};
 use crate::keys::{self, KeyInfo};
+use crate::known_hosts::{self, ForgetPlan};
 use crate::paths::SshPaths;
 use crate::ssh::args::config_file_args;
 use crate::ssh::effective::{EffectiveConfig, EffectiveResolver, SystemResolver};
@@ -68,6 +69,10 @@ impl Backend for SystemBackend {
 
     fn is_writable(&self, path: &Path) -> bool {
         config::writer::is_writable(path)
+    }
+
+    fn plan_forget(&self, name: &str) -> Result<Option<ForgetPlan>, String> {
+        known_hosts::plan_forget(&self.paths, name).map_err(|error| error.to_string())
     }
 
     fn commit(&self, pending: &PendingWrite) -> Result<WriteOutcome, WriteError> {
@@ -179,6 +184,31 @@ mod tests {
             b"Host docs\n  User alice\n"
         );
         assert_eq!(fs::read(result.backup.unwrap()).unwrap(), original);
+    }
+
+    #[test]
+    fn commits_the_known_hosts_removal_and_creates_a_backup() {
+        let (_temp, backend) = fixture();
+        let path = known_hosts::file_path(backend.paths());
+        let original = b"web ssh-ed25519 fake-web-key\ndb ssh-ed25519 fake-db-key\n";
+        fs::create_dir_all(backend.paths().ssh_dir()).unwrap();
+        fs::write(&path, original).unwrap();
+
+        let plan = backend.plan_forget("web").unwrap().unwrap();
+        assert_eq!(plan.removed, 1);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let outcome = backend.commit(&plan.pending).unwrap();
+        assert_eq!(outcome.target, path.canonicalize().unwrap());
+        assert_eq!(fs::read(&path).unwrap(), b"db ssh-ed25519 fake-db-key\n");
+        let backup = path.with_file_name(".known_hosts.sshtui.bak");
+        assert_eq!(outcome.backup, Some(backup.canonicalize().unwrap()));
+        assert_eq!(fs::read(backup).unwrap(), original);
+    }
+
+    #[test]
+    fn plans_no_removal_when_known_hosts_is_missing() {
+        let (_temp, backend) = fixture();
+        assert_eq!(backend.plan_forget("web"), Ok(None));
     }
 
     #[test]

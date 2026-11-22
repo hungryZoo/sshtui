@@ -10,6 +10,7 @@ use super::*;
 use crate::config::{DiffTag, PendingWrite, ReadWarning, WriteOutcome, load};
 use crate::dialog::DialogError;
 use crate::keys::KeyInfo;
+use crate::known_hosts::ForgetPlan;
 use crate::paths::SshPaths;
 use crate::ssh::args::config_file_args;
 use crate::update::InstallMethod;
@@ -37,6 +38,8 @@ struct FakeBackend {
     effective_calls: RefCell<Vec<String>>,
     writable: Cell<bool>,
     writable_calls: RefCell<Vec<PathBuf>>,
+    forget_plan: Result<Option<ForgetPlan>, String>,
+    forget_calls: RefCell<Vec<String>>,
     writes: RefCell<Vec<PendingWrite>>,
     commit_behaviors: RefCell<VecDeque<CommitBehavior>>,
     keys: Vec<KeyInfo>,
@@ -70,6 +73,8 @@ impl FakeBackend {
             effective_calls: RefCell::default(),
             writable: Cell::new(true),
             writable_calls: RefCell::default(),
+            forget_plan: Ok(None),
+            forget_calls: RefCell::default(),
             writes: RefCell::default(),
             commit_behaviors: RefCell::default(),
             keys: Vec::new(),
@@ -152,6 +157,11 @@ impl Backend for FakeBackend {
     fn is_writable(&self, path: &Path) -> bool {
         self.writable_calls.borrow_mut().push(path.into());
         self.writable.get()
+    }
+
+    fn plan_forget(&self, name: &str) -> Result<Option<ForgetPlan>, String> {
+        self.forget_calls.borrow_mut().push(name.into());
+        self.forget_plan.clone()
     }
 
     fn commit(&self, pending: &PendingWrite) -> Result<WriteOutcome, WriteError> {
@@ -1120,6 +1130,219 @@ fn deleting_requires_confirmation_and_updates_the_real_temporary_config() {
         )
     );
     assert_eq!(app.backend().writes.borrow().len(), 1);
+}
+
+fn forget_backend(removed: usize) -> (FakeBackend, PendingWrite) {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.set_effective(
+        "queue",
+        EffectiveConfig {
+            host_name: Some("queue.example.com".into()),
+            ..EffectiveConfig::default()
+        },
+    );
+    let original = "queue.example.com ssh-ed25519 fake-queue-key\n".repeat(removed);
+    let pending = PendingWrite::replacement(
+        known_hosts::file_path(backend.paths()),
+        original.as_bytes(),
+        Vec::new(),
+    );
+    backend.forget_plan = Ok(Some(ForgetPlan {
+        name: "queue.example.com".into(),
+        removed,
+        pending: pending.clone(),
+    }));
+    (backend, pending)
+}
+
+#[test]
+fn forget_uses_the_cached_effective_host_port_and_host_key_alias() {
+    for (port, host_key_alias, expected) in [
+        ("22", None, "host"),
+        ("2222", None, "[host]:2222"),
+        ("2222", Some("KeyAlias"), "keyalias"),
+    ] {
+        let backend = FakeBackend::new(EDITABLE);
+        backend.set_effective(
+            "web",
+            EffectiveConfig {
+                host_name: Some("HOST".into()),
+                host_key_alias: host_key_alias.map(str::to_owned),
+                port: Some(port.into()),
+                ..EffectiveConfig::default()
+            },
+        );
+        let mut app = App::new(backend);
+        ch(&mut app, 'x');
+
+        assert_eq!(*app.backend().forget_calls.borrow(), [expected]);
+        assert_eq!(app.backend().effective_count("web"), 1);
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(
+            status(&app, StatusLevel::Info),
+            format!("No entry for {expected} in ~/.ssh/known_hosts")
+        );
+        assert!(app.backend().writes.borrow().is_empty());
+    }
+}
+
+#[test]
+fn forget_reports_a_planning_error_in_the_list() {
+    let mut backend = FakeBackend::new(EDITABLE);
+    backend.set_effective("web", EffectiveConfig::default());
+    backend.forget_plan = Err("cannot read known_hosts".into());
+    let mut app = App::new(backend);
+    ch(&mut app, 'x');
+
+    assert_eq!(*app.backend().forget_calls.borrow(), ["web"]);
+    assert_eq!(status(&app, StatusLevel::Error), "cannot read known_hosts");
+    assert!(matches!(app.mode(), Mode::List));
+}
+
+#[test]
+fn forget_reports_an_effective_lookup_error_without_planning() {
+    let mut app = App::new(FakeBackend::new(EDITABLE));
+    ch(&mut app, 'x');
+
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        "Cannot resolve web: effective config unavailable"
+    );
+    assert_eq!(app.backend().effective_count("web"), 1);
+    assert!(app.backend().forget_calls.borrow().is_empty());
+    assert!(matches!(app.mode(), Mode::List));
+}
+
+#[test]
+fn clicking_forget_opens_confirmation_for_a_read_only_config_host() {
+    let (backend, pending) = forget_backend(1);
+    backend.writable.set(false);
+    let mut app = App::new(backend);
+    key(&mut app, KeyCode::End);
+    assert!(app.filtered_hosts().nth(2).unwrap().read_only);
+    app.handle_click(ClickTarget::Key(KeyCode::Char('x')), false);
+
+    let state = confirm(&app);
+    assert_eq!(state.title(), "Forget host key for queue");
+    assert_eq!(state.kind(), ConfirmKind::Forget);
+    assert_eq!(state.forget_name(), Some("queue.example.com"));
+    assert_eq!(state.path(), pending.path);
+    assert!(!state.is_delete());
+    assert_eq!(*app.backend().forget_calls.borrow(), ["queue.example.com"]);
+    assert!(app.backend().writes.borrow().is_empty());
+}
+
+#[test]
+fn cancelling_forget_returns_to_the_list_without_committing() {
+    let (backend, _) = forget_backend(1);
+    let mut app = App::new(backend);
+    key(&mut app, KeyCode::End);
+    for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+        ch(&mut app, 'x');
+        assert!(matches!(app.mode(), Mode::Confirm(_)));
+        key(&mut app, cancel);
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(app.selection(), Some(2));
+        assert!(app.backend().writes.borrow().is_empty());
+    }
+}
+
+#[test]
+fn confirming_forget_commits_the_plan_without_reloading_config() {
+    for (accept, removed, message) in [
+        (KeyCode::Char('y'), 1, "Removed 1 known_hosts entry"),
+        (KeyCode::Enter, 2, "Removed 2 known_hosts entries"),
+    ] {
+        let (backend, pending) = forget_backend(removed);
+        let backup = pending.path.with_extension("backup");
+        let mut app = App::new(backend);
+        key(&mut app, KeyCode::End);
+        let loads = app.backend().load_calls.get();
+        ch(&mut app, 'x');
+        assert!(matches!(app.mode(), Mode::Confirm(_)));
+        assert!(app.backend().writes.borrow().is_empty());
+        key(&mut app, accept);
+
+        assert_eq!(*app.backend().writes.borrow(), [pending]);
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(app.selection(), Some(2));
+        assert_eq!(names(&app), ["web", "db", "queue"]);
+        assert_eq!(app.backend().load_calls.get(), loads);
+        assert_eq!(
+            status(&app, StatusLevel::Info),
+            format!(
+                "{message} for queue.example.com (backup: {})",
+                backup.display()
+            )
+        );
+    }
+}
+
+#[test]
+fn a_stale_forget_prompts_retry_without_reloading_config() {
+    let (backend, pending) = forget_backend(1);
+    backend.commit_with(CommitBehavior::Stale);
+    let mut app = App::new(backend);
+    key(&mut app, KeyCode::End);
+    ch(&mut app, 'x');
+    ch(&mut app, 'y');
+
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.selection(), Some(2));
+    assert_eq!(app.backend().load_calls.get(), 1);
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        format!(
+            "{} was changed by another program; press x to try again",
+            pending.path.display()
+        )
+    );
+    assert_eq!(*app.backend().writes.borrow(), [pending]);
+}
+
+#[test]
+fn a_forget_write_error_returns_to_the_list_without_reloading_config() {
+    let (backend, pending) = forget_backend(1);
+    backend.commit_with(CommitBehavior::IoFailure);
+    let mut app = App::new(backend);
+    key(&mut app, KeyCode::End);
+    ch(&mut app, 'x');
+    ch(&mut app, 'y');
+
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.backend().load_calls.get(), 1);
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        format!(
+            "cannot write {}: fake write failure",
+            pending.path.display()
+        )
+    );
+}
+
+#[test]
+fn x_is_filter_input_until_the_filter_is_applied() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, '/');
+    ch(&mut app, 'x');
+
+    assert!(app.is_filtering());
+    assert_eq!(app.filter().value(), "x");
+    assert!(app.backend().forget_calls.borrow().is_empty());
+}
+
+#[test]
+fn forget_does_nothing_when_no_hosts_match_the_filter() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, '/');
+    app.handle_paste("missing");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.selection(), None);
+    ch(&mut app, 'x');
+
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.status().is_none());
+    assert!(app.backend().forget_calls.borrow().is_empty());
 }
 
 #[test]

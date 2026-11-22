@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::config::{ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, PickOutcome};
 use crate::keys::KeyInfo;
+use crate::known_hosts::ForgetPlan;
 use crate::paths::SshPaths;
 use crate::ssh::effective::EffectiveConfig;
 use crate::update::UpdatePlan;
@@ -24,6 +25,11 @@ pub trait Backend {
     fn discover_keys(&self) -> Vec<KeyInfo>;
     /// Returns whether a config file can be changed.
     fn is_writable(&self, path: &Path) -> bool;
+    /// Plans removing the known_hosts entries stored under `name`.
+    /// Returns Ok(None) when the file is missing or has no entry for the name.
+    fn plan_forget(&self, _name: &str) -> Result<Option<ForgetPlan>, String> {
+        Ok(None)
+    }
     /// Writes the planned change if the original content still matches.
     fn commit(&self, pending: &PendingWrite) -> Result<WriteOutcome, WriteError>;
     /// Returns the reason the native file dialog is unavailable, if any.

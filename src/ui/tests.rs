@@ -15,6 +15,7 @@ use crate::app::{App, Backend, ClickTarget, FormField, Mode};
 use crate::config::{self, ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, PickOutcome};
 use crate::keys::{KeyInfo, PublicKeyInfo};
+use crate::known_hosts::{self, ForgetPlan};
 use crate::paths::SshPaths;
 use crate::ssh::effective::EffectiveConfig;
 use crate::update::{InstallMethod, UpdatePlan, latest_url};
@@ -121,6 +122,10 @@ impl Backend for FakeBackend {
         !self.read_only
     }
 
+    fn plan_forget(&self, name: &str) -> Result<Option<ForgetPlan>, String> {
+        known_hosts::plan_forget(&self.paths, name).map_err(|error| error.to_string())
+    }
+
     fn commit(&self, pending: &PendingWrite) -> Result<WriteOutcome, WriteError> {
         pending.commit()
     }
@@ -214,7 +219,7 @@ fn list_shows_hosts_selection_effective_values_and_source() {
             "Source     ~/.ssh/config:14",
             "enter runs",
             "$ ssh prod-web-1",
-            " enter  connect   n new   e edit   d delete   / filter   r reload   esc quit",
+            " enter  connect   n new   e edit   d delete   x forget   / filter   r reload   esc quit",
         ],
     );
     assert_eq!(view.buffer()[(57, 5)].modifier, Modifier::BOLD);
@@ -1276,6 +1281,39 @@ fn confirmation_puts_key_hints_below_the_diff_for_edit_and_delete() {
     assert!(!screen(&view)[3].contains('+'));
 }
 
+#[test]
+fn forget_confirmation_shows_the_lookup_name_removals_backup_and_hints() {
+    for (count, summary) in [
+        (1, "1 entry for [www.example.com]:2222 will be removed  -1"),
+        (
+            2,
+            "2 entries for [www.example.com]:2222 will be removed  -2",
+        ),
+    ] {
+        let backend = FakeBackend::new(HOSTS);
+        let entry = format!(
+            "[www.example.com]:2222 ssh-ed25519 fake-key-{}-tail\n",
+            "a".repeat(110)
+        );
+        fs::write(known_hosts::file_path(backend.paths()), entry.repeat(count)).unwrap();
+        let mut app = App::new(backend);
+        press(&mut app, KeyCode::Char('x'));
+
+        let view = draw(&app, 100, 28);
+        let rows = screen(&view);
+        assert!(rows[1].starts_with("  sshtui  Forget host key for web"));
+        assert!(rows[1].ends_with("~/.ssh/known_hosts"));
+        assert!(rows[3].ends_with(summary));
+        for (index, line) in rows[5..5 + count].iter().enumerate() {
+            assert_eq!(view.buffer()[(14, 5 + index as u16)].symbol(), "-");
+            assert!(line.contains("[www.example.com]:2222 ssh-ed25519 fake-key-"));
+            assert!(!line.contains("-tail"));
+        }
+        assert!(rows[24].ends_with("The current file is kept as ~/.ssh/.known_hosts.sshtui.bak"));
+        assert!(rows[26].ends_with(" y  forget   n back to list   ↑↓ scroll"));
+    }
+}
+
 fn popup_over_fill(app: &App<FakeBackend>, fill: &str) -> TestBackend {
     use ratatui::layout::Rect;
     use ratatui::text::Span;
@@ -1594,6 +1632,66 @@ fn escape_is_the_last_list_hint_and_reflects_an_applied_filter() {
     let (view, hits) = draw_with_hits(&app, 100, 28);
     assert!(screen(&view)[26].ends_with("esc clear filter"));
     assert_text_hit(&view, &hits, "esc clear filter", escape);
+}
+
+#[test]
+fn filtered_list_hints_keep_escape_and_drop_reload_when_space_runs_out() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    press(&mut app, KeyCode::Char('/'));
+    app.handle_paste("web");
+    press(&mut app, KeyCode::Enter);
+
+    let wide = draw(&app, 100, 28);
+    assert_eq!(
+        screen(&wide)[26],
+        "   enter  connect   n new   e edit   d delete   x forget   / filter   r reload   esc clear filter"
+    );
+
+    let (view, hits) = draw_with_hits(&app, 96, 28);
+    assert_eq!(
+        screen(&view)[26],
+        "   enter  connect   n new   e edit   d delete   x forget   / filter   esc clear filter"
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "x forget",
+        Some(ClickTarget::Key(KeyCode::Char('x'))),
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "/ filter",
+        Some(ClickTarget::Key(KeyCode::Char('/'))),
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "esc clear filter",
+        Some(ClickTarget::Key(KeyCode::Esc)),
+    );
+    assert!(
+        (0..96).all(|column| hits.hit(column, 26) != Some(&ClickTarget::Key(KeyCode::Char('r'))))
+    );
+}
+
+#[test]
+fn narrow_list_hints_keep_the_badge_and_escape_together() {
+    let app = App::new(FakeBackend::new(HOSTS));
+    let (view, hits) = draw_with_hits(&app, 40, 12);
+    assert_eq!(screen(&view)[11], " enter  connect   n new   esc quit");
+    assert_text_hit(
+        &view,
+        &hits,
+        " enter  connect",
+        Some(ClickTarget::Key(KeyCode::Enter)),
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "esc quit",
+        Some(ClickTarget::Key(KeyCode::Esc)),
+    );
 }
 
 #[test]

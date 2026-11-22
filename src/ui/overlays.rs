@@ -5,7 +5,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{ClickTarget, ConfirmState, KeyPickerState, NoticeState, UpdateState};
+use crate::app::{
+    ClickTarget, ConfirmKind, ConfirmState, KeyPickerState, NoticeState, UpdateState,
+};
 use crate::config::{DiffHunk, DiffLine, DiffTag, backup_file_name};
 use crate::paths::SshPaths;
 
@@ -20,18 +22,22 @@ use super::{
 };
 
 pub(super) fn confirm_help(state: &ConfirmState) -> &'static [KeyHint] {
-    if state.is_delete() {
-        &[
+    match state.kind() {
+        ConfirmKind::Delete => &[
             ("y", "delete", Some(KeyCode::Char('y'))),
             ("n", "back to list", Some(KeyCode::Char('n'))),
             ("↑↓", "scroll", None),
-        ]
-    } else {
-        &[
+        ],
+        ConfirmKind::Save => &[
             ("y", "save", Some(KeyCode::Char('y'))),
             ("n", "back to form", Some(KeyCode::Char('n'))),
             ("↑↓", "scroll", None),
-        ]
+        ],
+        ConfirmKind::Forget => &[
+            ("y", "forget", Some(KeyCode::Char('y'))),
+            ("n", "back to list", Some(KeyCode::Char('n'))),
+            ("↑↓", "scroll", None),
+        ],
     }
 }
 
@@ -53,14 +59,13 @@ pub(super) fn confirm(
         }
     }
     let count = added.max(removed);
-    let mut summary = Line::from(Span::styled(
-        if count == 1 {
-            "1 line will change".into()
-        } else {
-            format!("{count} lines will change")
-        },
-        theme.text,
-    ));
+    let summary_text = match state.forget_name() {
+        Some(name) if removed == 1 => format!("1 entry for {name} will be removed"),
+        Some(name) => format!("{removed} entries for {name} will be removed"),
+        None if count == 1 => "1 line will change".into(),
+        None => format!("{count} lines will change"),
+    };
+    let mut summary = Line::from(Span::styled(summary_text, theme.text));
     if removed > 0 {
         summary.push_span(Span::styled(format!("  -{removed}"), theme.error));
     }

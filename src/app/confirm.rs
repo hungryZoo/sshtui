@@ -13,9 +13,21 @@ const PAGE_LINES: usize = 10;
 pub(super) enum ConfirmAction {
     Edit(FormState),
     Delete,
+    Forget { name: String, removed: usize },
 }
 
-/// A planned edit or deletion awaiting confirmation.
+/// What a confirmation will do when accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmKind {
+    /// Save changes to a host configuration.
+    Save,
+    /// Delete a host from the configuration.
+    Delete,
+    /// Remove a host's known_hosts entries.
+    Forget,
+}
+
+/// A planned change awaiting confirmation.
 #[derive(Debug)]
 pub struct ConfirmState {
     pub(super) pending: PendingWrite,
@@ -39,6 +51,7 @@ impl ConfirmState {
         match self.action {
             ConfirmAction::Edit(_) => format!("Save {}", self.alias),
             ConfirmAction::Delete => format!("Delete {}", self.alias),
+            ConfirmAction::Forget { .. } => format!("Forget host key for {}", self.alias),
         }
     }
 
@@ -50,6 +63,23 @@ impl ConfirmState {
     /// Returns whether the confirmation will remove a host.
     pub fn is_delete(&self) -> bool {
         matches!(self.action, ConfirmAction::Delete)
+    }
+
+    /// Returns the kind of change awaiting confirmation.
+    pub fn kind(&self) -> ConfirmKind {
+        match self.action {
+            ConfirmAction::Edit(_) => ConfirmKind::Save,
+            ConfirmAction::Delete => ConfirmKind::Delete,
+            ConfirmAction::Forget { .. } => ConfirmKind::Forget,
+        }
+    }
+
+    /// Returns the known_hosts lookup name when host key entries will be removed.
+    pub fn forget_name(&self) -> Option<&str> {
+        match &self.action {
+            ConfirmAction::Forget { name, .. } => Some(name),
+            _ => None,
+        }
     }
 
     /// Returns whether the pending write has a loaded file to back up.

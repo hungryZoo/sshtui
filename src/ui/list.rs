@@ -13,12 +13,13 @@ use super::{
     intensity, labeled_lines, styled_wrapped,
 };
 
-const fn list_hints(escape: &'static str) -> [KeyHint; 7] {
+const fn list_hints(escape: &'static str) -> [KeyHint; 8] {
     [
         ("enter", "connect", Some(KeyCode::Enter)),
         ("n", "new", Some(KeyCode::Char('n'))),
         ("e", "edit", Some(KeyCode::Char('e'))),
         ("d", "delete", Some(KeyCode::Char('d'))),
+        ("x", "forget", Some(KeyCode::Char('x'))),
         ("/", "filter", Some(KeyCode::Char('/'))),
         ("r", "reload", Some(KeyCode::Char('r'))),
         ("esc", escape, Some(KeyCode::Esc)),
