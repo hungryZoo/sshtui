@@ -1,15 +1,17 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::app::{App, Backend, FormField, FormKind, FormState};
+use crate::app::{App, Backend, ClickTarget, FormField, FormKind, FormState};
 
 use super::buttons::{ButtonKind, after_buttons, render_buttons};
 use super::layout::{
-    below, clip_cells, draw_panel, has_border, inset_horizontal, panel_title, render_lines, row,
+    below, clip_cells, draw_panel, has_border, inset_horizontal, left, panel_title, render_lines,
+    right_of, row,
 };
-use super::{KeyHint, input_window, styled_wrapped, theme};
+use super::{HitMap, KeyHint, input_window, styled_wrapped, theme};
 
 /// Returns the title of the connection form.
 pub(super) fn title(form: &FormState) -> String {
@@ -26,9 +28,9 @@ pub(super) fn help(form: &FormState) -> [KeyHint; 3] {
         FormKind::Edit { .. } => "save",
     };
     [
-        ("Tab/Shift+Tab", "move"),
-        ("Enter", submit),
-        ("Esc", "back"),
+        ("Tab/Shift+Tab", "move", Some(KeyCode::Tab)),
+        ("Enter", submit, Some(KeyCode::Enter)),
+        ("Esc", "back", Some(KeyCode::Esc)),
     ]
 }
 
@@ -39,6 +41,7 @@ pub(super) fn render<B: Backend>(
     form: &FormState,
     area: Rect,
     active: bool,
+    hits: &mut HitMap,
 ) {
     if area.is_empty() {
         return;
@@ -65,7 +68,9 @@ pub(super) fn render<B: Backend>(
 
     let mut focused_row = 0;
     let mut cursor = None;
+    let mut field_rows = Vec::with_capacity(FormField::ALL.len());
     for field in FormField::ALL {
+        let first_row = lines.len();
         let focused = form.focus() == field;
         let label = columns.label(caption(field), focused);
         if focused {
@@ -89,11 +94,12 @@ pub(super) fn render<B: Backend>(
             for value in original {
                 lines.push(Line::from(vec![columns.label("", false), value]));
             }
+            field_rows.push((first_row..lines.len(), field, 0));
             continue;
         }
 
         let input = form.input(field);
-        let (value, column) = input_window(input, columns.input, focused && active);
+        let (value, column, offset) = input_window(input, columns.input, focused && active);
         if focused && cursor.is_some() {
             cursor = Some(columns.label.saturating_add(column));
         }
@@ -113,6 +119,7 @@ pub(super) fn render<B: Backend>(
             Span::styled(clip_cells(value, columns.input).into_owned(), input_style)
         };
         lines.push(columns.field_line(label, value, input_style, requirement(form, field)));
+        field_rows.push((first_row..lines.len(), field, offset));
         if !input.value().is_empty()
             && let Some(error) = app.validation_error(field)
         {
@@ -140,6 +147,11 @@ pub(super) fn render<B: Backend>(
         area,
         lines.into_iter().skip(start).take(height).collect(),
     );
+    for (rows, field, column_offset) in field_rows {
+        for line in rows.start.max(start)..rows.end.min(start + height) {
+            columns.add_hits(hits, row(area, (line - start) as u16), field, column_offset);
+        }
+    }
     if let Some(column) = cursor
         && let Ok(offset) = u16::try_from(focused_row.saturating_sub(start))
         && offset < area.height
@@ -147,7 +159,7 @@ pub(super) fn render<B: Backend>(
         frame.set_cursor_position((area.x.saturating_add(column), row(area, offset).y));
     }
     if full_height && start == 0 {
-        render_guidance(frame, app, form, remaining);
+        render_guidance(frame, app, form, remaining, hits);
     }
 }
 
@@ -167,6 +179,22 @@ impl FieldColumns {
             label,
             input,
             show_note,
+        }
+    }
+
+    fn add_hits(&self, hits: &mut HitMap, area: Rect, field: FormField, offset: usize) {
+        hits.add(
+            area,
+            ClickTarget::FormField {
+                field,
+                column: u16::MAX,
+            },
+        );
+        let input = left(right_of(area, self.label), self.input);
+        for cell in input.columns() {
+            let column = offset + usize::from(cell.x - input.x);
+            let column = u16::try_from(column).unwrap_or(u16::MAX);
+            hits.add(cell, ClickTarget::FormField { field, column });
         }
     }
 
@@ -224,7 +252,13 @@ fn requirement(form: &FormState, field: FormField) -> Option<Span<'static>> {
     Some(Span::styled(note, theme::MUTED))
 }
 
-fn render_guidance<B: Backend>(frame: &mut Frame, app: &App<B>, form: &FormState, mut area: Rect) {
+fn render_guidance<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    form: &FormState,
+    mut area: Rect,
+    hits: &mut HitMap,
+) {
     if area.is_empty() {
         return;
     }
@@ -235,8 +269,8 @@ fn render_guidance<B: Backend>(frame: &mut Frame, app: &App<B>, form: &FormState
         ButtonKind::Secondary
     };
     let keys = [
-        ("Keys F2", ButtonKind::Secondary),
-        ("Browse F3", browse_kind),
+        ("Keys F2", ButtonKind::Secondary, KeyCode::F(2)),
+        ("Browse F3", browse_kind, KeyCode::F(3)),
     ];
     let reason_bounds = after_buttons(row(area, 0), &keys);
     let reason = unavailable.map_or_else(Vec::new, |reason| {
@@ -278,7 +312,7 @@ fn render_guidance<B: Backend>(frame: &mut Frame, app: &App<B>, form: &FormState
     let mut gaps = extra.saturating_sub(u16::from(show_actions));
 
     area = guidance_gap(area, &mut gaps);
-    render_buttons(frame, row(area, 0), &keys);
+    render_buttons(frame, row(area, 0), &keys, hits);
     render_lines(
         frame,
         Rect {
@@ -322,9 +356,10 @@ fn render_guidance<B: Backend>(frame: &mut Frame, app: &App<B>, form: &FormState
             frame,
             row(area, 0),
             &[
-                (submit, ButtonKind::Primary),
-                ("Cancel", ButtonKind::Secondary),
+                (submit, ButtonKind::Primary, KeyCode::Enter),
+                ("Cancel", ButtonKind::Secondary, KeyCode::Esc),
             ],
+            hits,
         );
     }
 }

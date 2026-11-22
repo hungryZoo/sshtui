@@ -260,6 +260,18 @@ impl FormState {
         self.focus = field as usize;
     }
 
+    pub(super) fn click_field(&mut self, field: FormField, column: u16) {
+        self.set_focus(field);
+        if !self.is_read_only(field) {
+            let column = if column == u16::MAX {
+                usize::MAX
+            } else {
+                usize::from(column)
+            };
+            self.fields[self.focus].text.set_cursor_to_column(column);
+        }
+    }
+
     pub(super) fn handle_input(&mut self, key: KeyEvent) {
         if !self.is_read_only(self.focus()) {
             self.fields[self.focus].text.handle_key(key);

@@ -1288,3 +1288,281 @@ fn update_key_is_text_in_the_connection_form() {
     assert!(matches!(app.mode(), Mode::Form(_)));
     assert_eq!(app.form().unwrap().input(FormField::Nickname).value(), "u");
 }
+
+#[test]
+fn clicking_a_host_selects_it_and_fetches_its_effective_config() {
+    let backend = FakeBackend::new(HOSTS);
+    let effective = basic_expected();
+    backend.set_effective("queue", effective.clone());
+    let mut app = App::new(backend);
+    ch(&mut app, 'r');
+    let reloaded = app.status().cloned();
+    app.handle_click(ClickTarget::HostRow(3), true);
+    assert_eq!(app.selection(), Some(0));
+    assert_eq!(app.status(), reloaded.as_ref());
+    assert_eq!(app.exit(), None);
+    assert_eq!(app.backend().effective_count("queue"), 0);
+
+    app.handle_click(ClickTarget::HostRow(2), false);
+    assert_eq!(app.selection(), Some(2));
+    assert_eq!(app.selected_effective(), Some(&Ok(effective)));
+    assert_eq!(app.backend().effective_count("queue"), 1);
+    assert_eq!(app.status(), None);
+    assert_eq!(app.exit(), None);
+}
+
+#[test]
+fn double_clicking_a_filtered_row_connects_and_keeps_filter_input_active() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, '/');
+    app.handle_paste("e");
+    assert_eq!(names(&app), ["web", "queue"]);
+
+    app.handle_click(ClickTarget::HostRow(1), false);
+    assert_eq!(app.selection(), Some(1));
+    assert!(app.is_filtering());
+    assert_eq!(app.exit(), None);
+
+    app.handle_click(ClickTarget::HostRow(1), true);
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["queue".into()])));
+    assert!(app.is_filtering());
+    assert_eq!(app.filter().value(), "e");
+}
+
+#[test]
+fn list_wheel_moves_one_row_and_stops_at_both_ends() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    for (down, index) in [
+        (true, 1),
+        (true, 2),
+        (true, 2),
+        (false, 1),
+        (false, 0),
+        (false, 0),
+    ] {
+        app.handle_scroll(down);
+        assert_eq!(app.selection(), Some(index));
+    }
+    assert_eq!(app.backend().effective_count("db"), 1);
+    assert_eq!(app.backend().effective_count("queue"), 1);
+}
+
+#[test]
+fn list_key_clicks_open_the_form_or_quit_and_update_notice_requires_a_plan() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, 'r');
+    app.handle_click(ClickTarget::UpdateNotice, false);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(status(&app, StatusLevel::Info), "Reloaded");
+
+    app.handle_click(ClickTarget::Key(KeyCode::Char('n')), false);
+    assert!(matches!(app.mode(), Mode::Form(_)));
+    assert_eq!(app.status(), None);
+    app.handle_click(ClickTarget::Key(KeyCode::Esc), false);
+    app.handle_click(ClickTarget::Key(KeyCode::Char('q')), false);
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+
+    let (mut app, _) = update_fixture(InstallMethod::Cargo);
+    app.handle_click(ClickTarget::UpdateNotice, false);
+    assert!(matches!(app.mode(), Mode::Update(_)));
+}
+
+#[test]
+fn clicking_form_fields_focuses_them_and_positions_the_cursor_by_cell() {
+    let mut app = App::new(FakeBackend::new(""));
+    let field = FormField::Address;
+    set_field(&mut app, field, "a한b");
+    key(&mut app, KeyCode::Tab);
+
+    for (column, cursor) in [(0, 0), (2, 1), (3, 2), (20, 3), (u16::MAX, 3)] {
+        app.handle_click(ClickTarget::FormField { field, column }, false);
+        let form = app.form().unwrap();
+        assert_eq!(form.focus(), field);
+        assert_eq!(form.input(field).cursor(), cursor);
+        assert_eq!(form.input(field).value(), "a한b");
+    }
+}
+
+#[test]
+fn clicking_a_read_only_field_only_changes_focus() {
+    let mut app = App::new(FakeBackend::new(MULTIPLE_KEYS));
+    ch(&mut app, 'e');
+    let field = FormField::KeyFile;
+    let form = app.form().unwrap();
+    let original = form.original_lines(field).unwrap().to_vec();
+    let cursor = form.input(field).cursor();
+    assert_ne!(form.focus(), field);
+
+    app.handle_click(ClickTarget::FormField { field, column: 3 }, false);
+    let form = app.form().unwrap();
+    assert_eq!(form.focus(), field);
+    assert_eq!(form.input(field).cursor(), cursor);
+    assert_eq!(form.original_lines(field), Some(original.as_slice()));
+}
+
+#[test]
+fn form_key_clicks_browse_open_the_picker_submit_or_return() {
+    let mut backend = FakeBackend::new(HOSTS).with_keys();
+    backend.unavailable = Some("Native browsing is unavailable".into());
+    let mut app = App::new(backend);
+    ch(&mut app, 'n');
+    app.handle_click(ClickTarget::Key(KeyCode::F(3)), false);
+    assert_eq!(
+        status(&app, StatusLevel::Warning),
+        "Native browsing is unavailable"
+    );
+    assert_eq!(app.backend().pick_calls.get(), 0);
+    app.handle_scroll(true);
+    assert_eq!(app.form().unwrap().focus(), FormField::Nickname);
+    assert!(app.status().is_some());
+
+    app.handle_click(ClickTarget::Key(KeyCode::F(2)), false);
+    assert!(matches!(app.mode(), Mode::KeyPicker(_)));
+    assert_eq!(app.status(), None);
+    app.handle_click(ClickTarget::Key(KeyCode::Esc), false);
+    assert!(matches!(app.mode(), Mode::Form(_)));
+    app.handle_click(ClickTarget::Key(KeyCode::Esc), false);
+    assert!(matches!(app.mode(), Mode::List));
+
+    ch(&mut app, 'n');
+    set_field(&mut app, FormField::Address, "example.com");
+    app.handle_click(ClickTarget::Key(KeyCode::Enter), false);
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["example.com".into()])));
+}
+
+#[test]
+fn confirmation_clicks_cancel_or_commit_and_wheel_scrolls_the_diff() {
+    let mut app = App::new(FakeBackend::new(EDITABLE));
+    ch(&mut app, 'd');
+    for (down, line) in [(false, 0), (true, 1), (true, 2), (true, 2), (false, 1)] {
+        app.handle_scroll(down);
+        assert_eq!(confirm(&app).scroll(), line);
+    }
+    app.handle_click(ClickTarget::Key(KeyCode::Char('n')), false);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.backend().writes.borrow().is_empty());
+
+    ch(&mut app, 'd');
+    app.handle_click(ClickTarget::Key(KeyCode::Char('y')), false);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.backend().writes.borrow().len(), 1);
+}
+
+#[test]
+fn picker_wheel_moves_selection_and_clicks_choose_a_key_or_cancel() {
+    let mut app = App::new(FakeBackend::new("").with_keys());
+    set_field(&mut app, FormField::KeyFile, "~/previous");
+    key(&mut app, KeyCode::F(2));
+    for (down, index) in [(true, 1), (true, 1), (false, 0), (false, 0)] {
+        app.handle_scroll(down);
+        assert!(matches!(app.mode(), Mode::KeyPicker(picker) if picker.selection() == index));
+    }
+
+    app.set_status(StatusLevel::Info, "Keep this message");
+    for target in [ClickTarget::Inert, ClickTarget::KeyRow(2)] {
+        app.handle_click(target, false);
+        assert!(matches!(app.mode(), Mode::KeyPicker(picker) if picker.selection() == 0));
+        assert_eq!(status(&app, StatusLevel::Info), "Keep this message");
+    }
+    app.handle_click(ClickTarget::Outside, false);
+    assert!(matches!(app.mode(), Mode::Form(_)));
+    assert_eq!(value(&app, FormField::KeyFile), "~/previous");
+    assert_eq!(app.status(), None);
+
+    key(&mut app, KeyCode::F(2));
+    app.handle_click(ClickTarget::KeyRow(1), false);
+    assert!(matches!(app.mode(), Mode::Form(_)));
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_b");
+    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+}
+
+#[test]
+fn outside_closes_notices_and_enter_accepts_their_actions() {
+    for target in [ClickTarget::Outside, ClickTarget::Key(KeyCode::Enter)] {
+        let backend = FakeBackend::new("");
+        backend.set_effective("web", EffectiveConfig::default());
+        let mut app = App::new(backend);
+        fill_named_host(&mut app, "web");
+        key(&mut app, KeyCode::Enter);
+        assert!(notice(&app).connects());
+        let expected =
+            (target == ClickTarget::Key(KeyCode::Enter)).then(|| Exit::Connect(vec!["web".into()]));
+        app.handle_click(target, false);
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(app.exit(), expected.as_ref());
+    }
+
+    let (mut app, plan) = update_fixture(InstallMethod::Cargo);
+    app.handle_click(ClickTarget::UpdateNotice, false);
+    app.handle_click(ClickTarget::Outside, false);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.exit(), None);
+    app.handle_click(ClickTarget::UpdateNotice, false);
+    app.handle_click(ClickTarget::Key(KeyCode::Enter), false);
+    assert_eq!(app.exit(), Some(&Exit::Update(plan)));
+}
+
+#[test]
+fn unrelated_click_targets_preserve_mode_and_status() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, 'r');
+    for target in [
+        ClickTarget::KeyRow(0),
+        ClickTarget::Outside,
+        ClickTarget::Inert,
+    ] {
+        app.handle_click(target, false);
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(status(&app, StatusLevel::Info), "Reloaded");
+    }
+
+    ch(&mut app, 'n');
+    key(&mut app, KeyCode::Enter);
+    let error = app.status().cloned();
+    assert!(error.is_some());
+    for target in [ClickTarget::HostRow(0), ClickTarget::UpdateNotice] {
+        app.handle_click(target, true);
+        assert!(matches!(app.mode(), Mode::Form(_)));
+        assert_eq!(app.status(), error.as_ref());
+        assert_eq!(app.exit(), None);
+    }
+}
+
+#[test]
+fn clicks_and_scrolls_are_ignored_after_exit_has_been_requested() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, 'q');
+    for target in [
+        ClickTarget::HostRow(2),
+        ClickTarget::Key(KeyCode::Char('n')),
+    ] {
+        app.handle_click(target, true);
+    }
+    app.handle_scroll(true);
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.selection(), Some(0));
+    assert_eq!(app.backend().effective_count("queue"), 0);
+}
+
+#[test]
+fn text_cursor_maps_display_cells_to_character_boundaries() {
+    let mut input = TextInput::default();
+    input.set_cursor_to_column(10);
+    assert_eq!(input.cursor(), 0);
+    input.set("a한e\u{301}👩‍💻z".into());
+    for (column, index) in [
+        (0, 0),
+        (1, 1),
+        (2, 1),
+        (3, 2),
+        (4, 4),
+        (5, 4),
+        (6, 7),
+        (7, 8),
+        (100, 8),
+    ] {
+        input.set_cursor_to_column(column);
+        assert_eq!(input.cursor(), index, "column {column}");
+    }
+}

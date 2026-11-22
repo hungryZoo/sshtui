@@ -1,11 +1,15 @@
 //! Button rendering and hit rectangles.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
+use crate::app::ClickTarget;
+
+use super::HitMap;
 use super::layout::{left, right_of};
 use super::theme;
 
@@ -27,8 +31,8 @@ impl ButtonKind {
     }
 }
 
-/// The label and visual role of a button.
-pub(super) type Button<'a> = (&'a str, ButtonKind);
+/// The label, visual role, and key action of a button.
+pub(super) type Button<'a> = (&'a str, ButtonKind, KeyCode);
 
 fn after_button(area: Rect, button: Rect) -> Rect {
     right_of(
@@ -61,8 +65,14 @@ pub(super) fn after_buttons(area: Rect, buttons: &[Button<'_>]) -> Rect {
 }
 
 /// Draws a row of buttons at their computed rectangles.
-pub(super) fn render_buttons(frame: &mut Frame, area: Rect, buttons: &[Button<'_>]) {
-    for ((label, kind), bounds) in button_areas(area, buttons) {
+pub(super) fn render_buttons(
+    frame: &mut Frame,
+    area: Rect,
+    buttons: &[Button<'_>],
+    hits: &mut HitMap,
+) {
+    for ((label, kind, code), bounds) in button_areas(area, buttons) {
         frame.render_widget(Span::styled(format!("[ {label} ]"), kind.style()), bounds);
+        hits.add(bounds, ClickTarget::Key(code));
     }
 }

@@ -1,29 +1,33 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Backend, HostRow};
+use crate::app::{App, Backend, ClickTarget, HostRow};
 
 use super::layout::{
     below, draw_panel, inset_horizontal, left, panel_title, render_lines, right_of, row,
     visible_rows,
 };
-use super::{KeyHint, input_window, labeled_lines, styled_wrapped, theme};
+use super::{HitMap, KeyHint, input_window, labeled_lines, styled_wrapped, theme};
 
 /// Returns the list key hints for this session.
 pub(super) fn help<B: Backend>(app: &App<B>) -> impl Iterator<Item = KeyHint> {
     [
-        ("Enter", "connect"),
-        ("n", "new"),
-        ("e", "edit"),
-        ("d", "delete"),
-        ("/", "filter"),
-        ("r", "reload"),
+        ("Enter", "connect", Some(KeyCode::Enter)),
+        ("n", "new", Some(KeyCode::Char('n'))),
+        ("e", "edit", Some(KeyCode::Char('e'))),
+        ("d", "delete", Some(KeyCode::Char('d'))),
+        ("/", "filter", Some(KeyCode::Char('/'))),
+        ("r", "reload", Some(KeyCode::Char('r'))),
     ]
     .into_iter()
-    .chain(app.update_plan().map(|_| ("u", "update")))
-    .chain([("q", "quit")])
+    .chain(
+        app.update_plan()
+            .map(|_| ("u", "update", Some(KeyCode::Char('u')))),
+    )
+    .chain([("q", "quit", Some(KeyCode::Char('q')))])
 }
 
 /// Returns the counts displayed in the list header.
@@ -37,7 +41,13 @@ pub(super) fn title<B: Backend>(app: &App<B>) -> String {
 }
 
 /// Draws the host list and the details of the selected host.
-pub(super) fn render<B: Backend>(frame: &mut Frame, app: &App<B>, body: Rect, show_cursor: bool) {
+pub(super) fn render<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    body: Rect,
+    show_cursor: bool,
+    hits: &mut HitMap,
+) {
     if body.is_empty() {
         return;
     }
@@ -58,7 +68,7 @@ pub(super) fn render<B: Backend>(frame: &mut Frame, app: &App<B>, body: Rect, sh
         Some(panel_title("Hosts")),
         true,
     );
-    render_hosts(frame, app, names, show_cursor);
+    render_hosts(frame, app, names, show_cursor, hits);
 
     let detail = right_of(body, names_width);
     if !detail.is_empty() {
@@ -71,13 +81,19 @@ pub(super) fn render<B: Backend>(frame: &mut Frame, app: &App<B>, body: Rect, sh
     }
 }
 
-fn render_hosts<B: Backend>(frame: &mut Frame, app: &App<B>, mut area: Rect, show_cursor: bool) {
+fn render_hosts<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    mut area: Rect,
+    show_cursor: bool,
+    hits: &mut HitMap,
+) {
     let filter = app.filter();
     if area.is_empty() {
         return;
     }
     if app.is_filtering() || !filter.value().is_empty() {
-        let (value, column) =
+        let (value, column, _) =
             input_window(filter, area.width.saturating_sub(1), app.is_filtering());
         frame.render_widget(
             Line::from(vec![Span::styled("/", theme::ACCENT), Span::raw(value)]),
@@ -105,6 +121,7 @@ fn render_hosts<B: Backend>(frame: &mut Frame, app: &App<B>, mut area: Rect, sho
     if let Some(&(first, _)) = rows.peek() {
         for ((index, area), host) in rows.zip(hosts.skip(first)) {
             render_host(frame, area, host, selection == Some(index));
+            hits.add(area, ClickTarget::HostRow(index));
         }
     }
 }

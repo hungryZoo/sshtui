@@ -7,9 +7,10 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
 use tempfile::{TempDir, tempdir};
+use unicode_width::UnicodeWidthStr;
 
-use super::render;
-use crate::app::{App, Backend, FormField, Mode};
+use super::{HitMap, render};
+use crate::app::{App, Backend, ClickTarget, FormField, Mode};
 use crate::config::{self, ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, PickOutcome};
 use crate::keys::{KeyInfo, PublicKeyInfo};
@@ -148,9 +149,14 @@ fn set_field(app: &mut App<FakeBackend>, field: FormField, value: &str) {
 }
 
 fn draw(app: &App<FakeBackend>, width: u16, height: u16) -> TestBackend {
+    draw_with_hits(app, width, height).0
+}
+
+fn draw_with_hits(app: &App<FakeBackend>, width: u16, height: u16) -> (TestBackend, HitMap) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|frame| render(frame, app)).unwrap();
-    terminal.backend().clone()
+    let mut hits = HitMap::default();
+    terminal.draw(|frame| hits = render(frame, app)).unwrap();
+    (terminal.backend().clone(), hits)
 }
 
 fn screen(backend: &TestBackend) -> Vec<String> {
@@ -991,10 +997,13 @@ fn popup_over_fill(app: &App<FakeBackend>, fill: &str) -> TestBackend {
             for row in body.rows() {
                 frame.render_widget(Span::raw(fill.repeat(100)), row);
             }
+            let mut hits = HitMap::default();
             match app.mode() {
-                Mode::KeyPicker(state) => super::overlays::key_picker(frame, state, body),
-                Mode::Notice(state) => super::overlays::notice(frame, state, body),
-                Mode::Update(state) => super::overlays::update(frame, state, body),
+                Mode::KeyPicker(state) => {
+                    super::overlays::key_picker(frame, state, body, &mut hits)
+                }
+                Mode::Notice(state) => super::overlays::notice(frame, state, body, &mut hits),
+                Mode::Update(state) => super::overlays::update(frame, state, body, &mut hits),
                 _ => unreachable!("expected a popup"),
             }
         })
@@ -1151,4 +1160,336 @@ fn inherited_form_input_uses_muted_text_and_a_focused_underline() {
     assert_eq!(input.fg, Color::DarkGray);
     assert!(input.modifier.contains(Modifier::UNDERLINED));
     assert_eq!(input.underline_color, Color::Cyan);
+}
+
+fn assert_text_hit(view: &TestBackend, hits: &HitMap, text: &str, target: Option<ClickTarget>) {
+    for (row, line) in screen(view).iter().enumerate() {
+        if let Some(index) = line.find(text) {
+            let start = line[..index].width() as u16;
+            for column in start..start + text.width() as u16 {
+                assert_eq!(
+                    hits.hit(column, row as u16),
+                    target.as_ref(),
+                    "{text:?} at column {column}"
+                );
+            }
+            return;
+        }
+    }
+    panic!("missing hit-test text {text:?}");
+}
+
+#[test]
+fn host_hits_cover_the_panel_rows_and_use_scrolled_filtered_indices() {
+    let mut app = App::new(FakeBackend::new(MANY_HOSTS));
+    let (_, hits) = draw_with_hits(&app, 80, 10);
+    for index in 0..6 {
+        for column in [1, 12, 22] {
+            assert_eq!(
+                hits.hit(column, 2 + index as u16),
+                Some(&ClickTarget::HostRow(index))
+            );
+        }
+    }
+    assert_eq!(hits.hit(0, 2), None);
+    assert_eq!(hits.hit(23, 2), None);
+
+    press(&mut app, KeyCode::End);
+    let (view, hits) = draw_with_hits(&app, 80, 10);
+    assert!(screen(&view)[2].starts_with("│ queue"));
+    assert_eq!(hits.hit(12, 2), Some(&ClickTarget::HostRow(2)));
+    assert_eq!(hits.hit(12, 7), Some(&ClickTarget::HostRow(7)));
+
+    press(&mut app, KeyCode::Char('/'));
+    app.handle_paste("e");
+    let (view, hits) = draw_with_hits(&app, 80, 10);
+    assert!(screen(&view)[4].starts_with("│ queue"));
+    assert_eq!(hits.hit(12, 4), Some(&ClickTarget::HostRow(1)));
+}
+
+#[test]
+fn list_key_hints_register_whole_pairs_and_leave_gaps_unmapped() {
+    let app = update_fixture(InstallMethod::Brew);
+    let (view, hits) = draw_with_hits(&app, 100, 12);
+    for (text, code) in [
+        ("Enter connect", KeyCode::Enter),
+        ("n new", KeyCode::Char('n')),
+        ("e edit", KeyCode::Char('e')),
+        ("d delete", KeyCode::Char('d')),
+        ("/ filter", KeyCode::Char('/')),
+        ("r reload", KeyCode::Char('r')),
+        ("u update", KeyCode::Char('u')),
+        ("q quit", KeyCode::Char('q')),
+    ] {
+        assert_text_hit(&view, &hits, text, Some(ClickTarget::Key(code)));
+    }
+    assert_eq!(hits.hit(13, 11), None);
+    assert_eq!(hits.hit(14, 11), None);
+
+    let (_, hits) = draw_with_hits(&app, 16, 12);
+    assert_eq!(hits.hit(12, 11), Some(&ClickTarget::Key(KeyCode::Enter)));
+    assert_eq!(hits.hit(15, 11), None);
+}
+
+#[test]
+fn update_notice_hit_requires_a_plan_and_room_in_the_header() {
+    let app = update_fixture(InstallMethod::Brew);
+    let (view, hits) = draw_with_hits(&app, 100, 12);
+    let text = "v2.0.0 available (u: update)";
+    assert_text_hit(&view, &hits, text, Some(ClickTarget::UpdateNotice));
+    assert_eq!(hits.hit(99 - text.width() as u16, 0), None);
+
+    let (_, hits) = draw_with_hits(&app, 30, 12);
+    assert!((0..30).all(|column| hits.hit(column, 0).is_none()));
+    let app = App::new(FakeBackend::new(HOSTS));
+    let (_, hits) = draw_with_hits(&app, 100, 12);
+    assert!((0..100).all(|column| hits.hit(column, 0).is_none()));
+}
+
+#[test]
+fn form_hits_cover_field_labels_inputs_and_note_columns() {
+    let app = App::new(FakeBackend::new(""));
+    let (view, hits) = draw_with_hits(&app, 80, 24);
+    for (field, row) in FormField::ALL.into_iter().zip(2..7) {
+        for (x, column) in [
+            (2, u16::MAX),
+            (11, u16::MAX),
+            (12, 0),
+            (20, 8),
+            (66, 54),
+            (69, u16::MAX),
+        ] {
+            assert_eq!(
+                hits.hit(x, row),
+                Some(&ClickTarget::FormField { field, column })
+            );
+        }
+        assert_eq!(hits.hit(0, row), None);
+    }
+    assert_text_hit(
+        &view,
+        &hits,
+        "Tab/Shift+Tab move",
+        Some(ClickTarget::Key(KeyCode::Tab)),
+    );
+
+    let mut app = app;
+    set_field(&mut app, FormField::KeyFile, "");
+    let (view, hits) = draw_with_hits(&app, 20, 5);
+    let cursor = view.cursor_position();
+    assert_eq!(
+        hits.hit(cursor.x, cursor.y),
+        Some(&ClickTarget::FormField {
+            field: FormField::KeyFile,
+            column: 0,
+        })
+    );
+    assert!(!hits.regions.iter().any(|(_, target)| matches!(
+        target,
+        ClickTarget::FormField {
+            field: FormField::Nickname,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn input_hits_include_the_display_width_of_horizontally_scrolled_text() {
+    let mut app = App::new(FakeBackend::new(""));
+    let field = FormField::Address;
+    set_field(&mut app, field, &format!("{}끝", "가".repeat(50)));
+    let (view, hits) = draw_with_hits(&app, 43, 20);
+    let cursor = view.cursor_position();
+    let first = 12;
+    let offset = 102 - (cursor.x - first);
+    assert_eq!(offset, 86);
+    for x in first..=cursor.x {
+        assert_eq!(
+            hits.hit(x, cursor.y),
+            Some(&ClickTarget::FormField {
+                field,
+                column: offset + x - first,
+            })
+        );
+    }
+    let target = hits.hit(first + 1, cursor.y).unwrap().clone();
+    app.handle_click(target, false);
+    assert_eq!(app.form().unwrap().input(field).cursor(), 43);
+}
+
+#[test]
+fn form_buttons_are_hit_targets_including_disabled_browse() {
+    let new = App::new(FakeBackend::new(""));
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.unavailable = Some("Browse is unavailable".into());
+    let mut edit = App::new(backend);
+    press(&mut edit, KeyCode::Char('e'));
+    for (app, submit) in [(&new, "[ Connect ]"), (&edit, "[ Save ]")] {
+        let (view, hits) = draw_with_hits(app, 80, 24);
+        for (text, code) in [
+            ("[ Keys F2 ]", KeyCode::F(2)),
+            ("[ Browse F3 ]", KeyCode::F(3)),
+            (submit, KeyCode::Enter),
+            ("[ Cancel ]", KeyCode::Esc),
+        ] {
+            assert_text_hit(&view, &hits, text, Some(ClickTarget::Key(code)));
+        }
+    }
+    let (_, hits) = draw_with_hits(&new, 20, 24);
+    assert!(
+        !hits
+            .regions
+            .iter()
+            .any(|(_, target)| *target == ClickTarget::Key(KeyCode::F(3)))
+    );
+}
+
+#[test]
+fn confirm_buttons_and_action_hints_use_their_letter_keys() {
+    let app = edit_confirmation();
+    let (view, hits) = draw_with_hits(&app, 80, 24);
+    for (text, code) in [
+        ("[ Confirm y ]", 'y'),
+        ("y/Enter confirm", 'y'),
+        ("[ Cancel n ]", 'n'),
+        ("n/Esc cancel", 'n'),
+    ] {
+        assert_text_hit(
+            &view,
+            &hits,
+            text,
+            Some(ClickTarget::Key(KeyCode::Char(code))),
+        );
+    }
+    assert_text_hit(&view, &hits, "Up/Down scroll", None);
+}
+
+#[test]
+fn popup_targets_cover_rows_and_buttons_and_swallow_background_clicks() {
+    let mut picker = App::new(FakeBackend::new("").with_keys());
+    press(&mut picker, KeyCode::F(2));
+    let (view, hits) = draw_with_hits(&picker, 100, 24);
+    assert_text_hit(
+        &view,
+        &hits,
+        "id_a (ssh-ed25519, test key)",
+        Some(ClickTarget::KeyRow(0)),
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "id_b (ssh-ed25519, test key)",
+        Some(ClickTarget::KeyRow(1)),
+    );
+    assert_eq!(hits.hit(0, 0), Some(&ClickTarget::Outside));
+    assert_eq!(hits.hit(12, 2), Some(&ClickTarget::Outside));
+    assert_eq!(view.buffer()[(13, 10)].symbol(), "╭");
+    assert_eq!(hits.hit(13, 10), Some(&ClickTarget::Inert));
+
+    let mut acknowledgment = edit_confirmation();
+    press(&mut acknowledgment, KeyCode::Enter);
+    let mut update = update_fixture(InstallMethod::Brew);
+    press(&mut update, KeyCode::Char('u'));
+    let mut manual = update_fixture(InstallMethod::Unknown);
+    press(&mut manual, KeyCode::Char('u'));
+    let list = App::new(FakeBackend::new(HOSTS));
+    let (_, list_hits) = draw_with_hits(&list, 100, 24);
+    assert_eq!(list_hits.hit(12, 2), Some(&ClickTarget::HostRow(0)));
+
+    for (app, buttons) in [
+        (
+            connection_notice(),
+            &[
+                ("[ Connect anyway ]", KeyCode::Enter),
+                ("[ Back ]", KeyCode::Esc),
+            ][..],
+        ),
+        (acknowledgment, &[("[ OK ]", KeyCode::Enter)][..]),
+        (
+            update,
+            &[
+                ("[ Update and exit ]", KeyCode::Enter),
+                ("[ Cancel ]", KeyCode::Esc),
+            ][..],
+        ),
+        (manual, &[("[ Close ]", KeyCode::Esc)][..]),
+    ] {
+        let (view, hits) = draw_with_hits(&app, 100, 24);
+        for &(text, code) in buttons {
+            assert_text_hit(&view, &hits, text, Some(ClickTarget::Key(code)));
+        }
+        assert!(matches!(
+            hits.hit(12, 2),
+            Some(ClickTarget::Outside | ClickTarget::Inert)
+        ));
+        let (right, bottom) = view
+            .buffer()
+            .area
+            .rows()
+            .flat_map(|row| (row.left()..row.right()).map(move |x| (x, row.y)))
+            .find(|&pos| view.buffer()[pos].symbol() == "╯" && view.buffer()[pos].fg == Color::Cyan)
+            .unwrap();
+        assert_eq!(view.buffer()[(right - 1, bottom - 1)].symbol(), " ");
+        assert_eq!(hits.hit(right - 1, bottom - 1), Some(&ClickTarget::Inert));
+    }
+}
+
+#[test]
+fn popup_help_hits_take_priority_over_the_outside_region() {
+    let mut picker = App::new(FakeBackend::new("").with_keys());
+    press(&mut picker, KeyCode::F(2));
+    let (view, hits) = draw_with_hits(&picker, 80, 24);
+    assert_text_hit(
+        &view,
+        &hits,
+        "Enter select",
+        Some(ClickTarget::Key(KeyCode::Enter)),
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "Esc cancel",
+        Some(ClickTarget::Key(KeyCode::Esc)),
+    );
+    assert_eq!(hits.hit(12, 23), Some(&ClickTarget::Outside));
+
+    let mut acknowledgment = edit_confirmation();
+    press(&mut acknowledgment, KeyCode::Enter);
+    let (view, hits) = draw_with_hits(&acknowledgment, 80, 24);
+    assert_text_hit(
+        &view,
+        &hits,
+        "Enter/Esc back to list",
+        Some(ClickTarget::Key(KeyCode::Enter)),
+    );
+}
+
+#[test]
+fn every_hit_region_is_nonempty_and_within_small_frames() {
+    let mut picker = App::new(FakeBackend::new("").with_keys());
+    press(&mut picker, KeyCode::F(2));
+    let mut update = update_fixture(InstallMethod::Brew);
+    press(&mut update, KeyCode::Char('u'));
+    let apps = [
+        App::new(FakeBackend::new(HOSTS)),
+        App::new(FakeBackend::new("")),
+        edit_confirmation(),
+        picker,
+        connection_notice(),
+        update,
+    ];
+    for (width, height) in [(1, 1), (5, 2), (20, 5)] {
+        for app in &apps {
+            let (view, hits) = draw_with_hits(app, width, height);
+            let frame = view.buffer().area;
+            for (area, target) in &hits.regions {
+                assert!(!area.is_empty(), "{target:?} in {area:?}");
+                assert_eq!(
+                    area.intersection(frame),
+                    *area,
+                    "{target:?} outside {frame:?}"
+                );
+            }
+        }
+    }
 }

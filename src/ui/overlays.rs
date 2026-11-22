@@ -1,9 +1,10 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
 
-use crate::app::{ConfirmState, KeyPickerState, NoticeState, UpdateState};
+use crate::app::{ClickTarget, ConfirmState, KeyPickerState, NoticeState, UpdateState};
 use crate::config::{DiffHunk, DiffLine, DiffTag};
 use crate::paths::SshPaths;
 
@@ -11,10 +12,16 @@ use super::buttons::{ButtonKind, render_buttons};
 use super::layout::{
     below, draw_panel, has_border, inset_horizontal, panel_title, render_lines, row, visible_rows,
 };
-use super::{labeled_lines, styled_wrapped, theme, wrapped_lines};
+use super::{HitMap, labeled_lines, styled_wrapped, theme, wrapped_lines};
 
 /// Draws the file and diff for a pending change.
-pub(super) fn confirm(frame: &mut Frame, state: &ConfirmState, paths: &SshPaths, area: Rect) {
+pub(super) fn confirm(
+    frame: &mut Frame,
+    state: &ConfirmState,
+    paths: &SshPaths,
+    area: Rect,
+    hits: &mut HitMap,
+) {
     if area.is_empty() {
         return;
     }
@@ -25,9 +32,10 @@ pub(super) fn confirm(frame: &mut Frame, state: &ConfirmState, paths: &SshPaths,
         frame,
         buttons,
         &[
-            ("Confirm y", ButtonKind::Primary),
-            ("Cancel n", ButtonKind::Secondary),
+            ("Confirm y", ButtonKind::Primary, KeyCode::Char('y')),
+            ("Cancel n", ButtonKind::Secondary, KeyCode::Char('n')),
         ],
+        hits,
     );
     let path = paths.abbreviate_home(state.path());
     let path_lines = styled_wrapped(&path, content.width, content.height.min(2), theme::MUTED);
@@ -91,21 +99,22 @@ fn diff_line(change: &DiffLine, width: usize) -> Line<'static> {
 }
 
 /// Draws the available keys over the form.
-pub(super) fn key_picker(frame: &mut Frame, state: &KeyPickerState, body: Rect) {
+pub(super) fn key_picker(frame: &mut Frame, state: &KeyPickerState, body: Rect, hits: &mut HitMap) {
     let keys = state.keys();
     let bounds = popup_bounds(body, 74, keys.len());
-    let area = draw_popup(frame, bounds, "Select a key file");
+    let area = draw_popup(frame, bounds, "Select a key file", hits);
     let selection = state.selection();
     for (index, rect) in visible_rows(area, keys.len(), Some(selection)) {
         frame.render_widget(Span::raw(keys[index].label()), rect);
         if index == selection {
             frame.buffer_mut().set_style(rect, theme::SELECTED);
         }
+        hits.add(rect, ClickTarget::KeyRow(index));
     }
 }
 
 /// Draws the acknowledgment message and its actions.
-pub(super) fn notice(frame: &mut Frame, state: &NoticeState, body: Rect) {
+pub(super) fn notice(frame: &mut Frame, state: &NoticeState, body: Rect, hits: &mut HitMap) {
     const MAX_WIDTH: u16 = 104;
     let width = popup_content_width(body, MAX_WIDTH);
     let lines = styled_wrapped(
@@ -115,22 +124,22 @@ pub(super) fn notice(frame: &mut Frame, state: &NoticeState, body: Rect) {
         theme::WARNING,
     );
     let bounds = popup_bounds(body, MAX_WIDTH, lines.len().saturating_add(1));
-    let area = draw_popup(frame, bounds, state.title());
+    let area = draw_popup(frame, bounds, state.title(), hits);
     let (content, footer) = split_footer(area);
     render_lines(frame, content, lines);
     let buttons: &[_] = if state.connects() {
         &[
-            ("Connect anyway", ButtonKind::Primary),
-            ("Back", ButtonKind::Secondary),
+            ("Connect anyway", ButtonKind::Primary, KeyCode::Enter),
+            ("Back", ButtonKind::Secondary, KeyCode::Esc),
         ]
     } else {
-        &[("OK", ButtonKind::Primary)]
+        &[("OK", ButtonKind::Primary, KeyCode::Enter)]
     };
-    render_buttons(frame, footer, buttons);
+    render_buttons(frame, footer, buttons, hits);
 }
 
 /// Draws update details and the available actions.
-pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect) {
+pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect, hits: &mut HitMap) {
     const MAX_WIDTH: u16 = 104;
     let width = popup_content_width(body, MAX_WIDTH);
     let label_width = 15.min(width.saturating_sub(1));
@@ -158,18 +167,23 @@ pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect) {
     }
 
     let bounds = popup_bounds(body, MAX_WIDTH, lines.len().saturating_add(1));
-    let area = draw_popup(frame, bounds, concat!("Update ", env!("CARGO_PKG_NAME")));
+    let area = draw_popup(
+        frame,
+        bounds,
+        concat!("Update ", env!("CARGO_PKG_NAME")),
+        hits,
+    );
     let (content, footer) = split_footer(area);
     render_lines(frame, content, lines);
     let buttons: &[_] = if state.can_run() {
         &[
-            ("Update and exit", ButtonKind::Primary),
-            ("Cancel", ButtonKind::Secondary),
+            ("Update and exit", ButtonKind::Primary, KeyCode::Enter),
+            ("Cancel", ButtonKind::Secondary, KeyCode::Esc),
         ]
     } else {
-        &[("Close", ButtonKind::Primary)]
+        &[("Close", ButtonKind::Primary, KeyCode::Esc)]
     };
-    render_buttons(frame, footer, buttons);
+    render_buttons(frame, footer, buttons, hits);
 }
 
 fn split_footer(area: Rect) -> (Rect, Rect) {
@@ -187,7 +201,9 @@ fn split_footer(area: Rect) -> (Rect, Rect) {
     )
 }
 
-fn draw_popup(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+fn draw_popup(frame: &mut Frame, area: Rect, title: &str, hits: &mut HitMap) -> Rect {
+    hits.add(frame.area(), ClickTarget::Outside);
+    hits.add(area, ClickTarget::Inert);
     frame.render_widget(Clear, area);
     let title = Line::from(Span::styled(format!(" {title} "), theme::BOLD));
     if has_border(area) {

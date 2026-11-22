@@ -42,6 +42,30 @@ pub enum Exit {
     Update(UpdatePlan),
 }
 
+/// Something on screen that can be clicked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Row index in the filtered host list.
+    HostRow(usize),
+    /// A field and the display column in its full value.
+    FormField {
+        /// The field to focus.
+        field: FormField,
+        /// Column including horizontal scrolling, or `u16::MAX` for the end.
+        column: u16,
+    },
+    /// Row index in the key picker.
+    KeyRow(usize),
+    /// A button or hint that acts like an unmodified key press.
+    Key(KeyCode),
+    /// The update notice in the header.
+    UpdateNotice,
+    /// An area that swallows clicks without acting on them.
+    Inert,
+    /// Outside the active popup.
+    Outside,
+}
+
 /// Severity of a status message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusLevel {
@@ -122,6 +146,58 @@ impl<B: Backend> App<B> {
             Mode::Notice(notice) => self.handle_notice_key(notice, key),
             Mode::Update(update) => self.handle_update_key(update, key),
         };
+    }
+
+    /// Handles a left click, with `double` set for a second click on the same target.
+    pub fn handle_click(&mut self, target: ClickTarget, double: bool) {
+        if self.exit.is_some() {
+            return;
+        }
+
+        let code = match (&mut self.mode, target) {
+            (_, ClickTarget::Key(code)) => code,
+            (Mode::List, ClickTarget::HostRow(index))
+                if index < self.list.rows(&self.config).len() =>
+            {
+                self.status = None;
+                self.list.select(index);
+                self.refresh_selected();
+                if double {
+                    self.connect_selected();
+                }
+                return;
+            }
+            (Mode::List, ClickTarget::UpdateNotice) if self.update_plan.is_some() => {
+                KeyCode::Char('u')
+            }
+            (Mode::Form(form), ClickTarget::FormField { field, column }) => {
+                self.status = None;
+                form.click_field(field, column);
+                return;
+            }
+            (Mode::KeyPicker(picker), ClickTarget::KeyRow(index))
+                if index < picker.keys().len() =>
+            {
+                picker.select(index);
+                KeyCode::Enter
+            }
+            (Mode::KeyPicker(_) | Mode::Notice(_) | Mode::Update(_), ClickTarget::Outside) => {
+                KeyCode::Esc
+            }
+            _ => return,
+        };
+        self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// Handles one mouse wheel step in the active screen.
+    pub fn handle_scroll(&mut self, down: bool) {
+        if matches!(
+            self.mode,
+            Mode::List | Mode::Confirm(_) | Mode::KeyPicker(_)
+        ) {
+            let code = if down { KeyCode::Down } else { KeyCode::Up };
+            self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
     }
 
     /// Inserts a bracketed paste into the focused form input or active filter.
@@ -307,6 +383,12 @@ impl<B: Backend> App<B> {
         }
     }
 
+    fn connect_selected(&mut self) {
+        if let Some(entry) = self.list.selected(&self.config) {
+            self.connect(ConnectTarget::Alias(entry.name.clone()));
+        }
+    }
+
     fn handle_list_key(&mut self, key: KeyEvent) -> Mode {
         if !is_plain(key) {
             return Mode::List;
@@ -334,11 +416,7 @@ impl<B: Backend> App<B> {
             KeyCode::Down | KeyCode::Char('j') => self.list.select(self.list.selection + 1),
             KeyCode::Home | KeyCode::Char('g') => self.list.select(0),
             KeyCode::End | KeyCode::Char('G') => self.list.select(self.list.last_index()),
-            KeyCode::Enter => {
-                if let Some(entry) = self.list.selected(&self.config) {
-                    self.connect(ConnectTarget::Alias(entry.name.clone()));
-                }
-            }
+            KeyCode::Enter => self.connect_selected(),
             KeyCode::Char('n') => return Mode::Form(FormState::new()),
             KeyCode::Char('e') => return self.edit_selected(),
             KeyCode::Char('d') => return self.delete_selected(),

@@ -102,12 +102,16 @@ impl KeyPickerState {
         self.selection
     }
 
+    pub(super) fn select(&mut self, index: usize) {
+        self.selection = index.min(self.keys.len().saturating_sub(1));
+    }
+
     pub(super) fn up(&mut self) {
-        self.selection = self.selection.saturating_sub(1);
+        self.select(self.selection.saturating_sub(1));
     }
 
     pub(super) fn down(&mut self) {
-        self.selection = (self.selection + 1).min(self.keys.len().saturating_sub(1));
+        self.select(self.selection + 1);
     }
 }
 

@@ -1,6 +1,7 @@
 //! Single-line text input shared by the form and filter.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{style::Style, text::Span};
 use unicode_width::UnicodeWidthStr;
 
 /// Single-line input with a cursor indexed by Unicode scalar values.
@@ -24,6 +25,25 @@ impl TextInput {
     /// Returns the terminal column of the cursor within the field.
     pub fn cursor_column(&self) -> usize {
         self.value[..self.byte_index(self.cursor)].width()
+    }
+
+    pub(super) fn set_cursor_to_column(&mut self, mut column: usize) {
+        let mut rest = self.value.as_str();
+        for grapheme in Span::raw(&self.value).styled_graphemes(Style::default()) {
+            let symbol = grapheme.symbol;
+            // The renderer skips control characters when drawing graphemes.
+            let Some(start) = rest.find(symbol) else {
+                break;
+            };
+            rest = &rest[start..];
+            let Some(remaining) = column.checked_sub(symbol.width()) else {
+                self.cursor = self.value[..self.value.len() - rest.len()].chars().count();
+                return;
+            };
+            rest = &rest[symbol.len()..];
+            column = remaining;
+        }
+        self.cursor = self.value.chars().count();
     }
 
     pub(super) fn set(&mut self, value: String) {

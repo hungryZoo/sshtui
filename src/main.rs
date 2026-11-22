@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
@@ -61,6 +62,9 @@ fn main() -> std::process::ExitCode {
             println!("  --update        Check for a new release and install it if available");
             println!("  SSHTUI_SSH_DIR  Override the SSH directory (default: ~/.ssh)");
             println!(
+                "  SSHTUI_NO_MOUSE  Disable mouse support (keeps the terminal's own text selection)"
+            );
+            println!(
                 "  {}  Disable automatic update checks and notices when nonempty and not 0",
                 update::DISABLE_ENV
             );
@@ -112,6 +116,10 @@ fn apply_update(plan: &UpdatePlan) -> ExitCode {
     }
 }
 
+fn mouse_enabled(value: Option<&OsStr>) -> bool {
+    value.is_none_or(|value| value.is_empty() || value == "0")
+}
+
 fn run() -> anyhow::Result<ExitCode> {
     let paths = SshPaths::from_env()?;
     let ssh = find_ssh()?;
@@ -123,7 +131,10 @@ fn run() -> anyhow::Result<ExitCode> {
     update::maybe_spawn_check();
     let backend =
         SystemBackend::new(paths, ssh.clone(), dialog::system_picker()).with_update_plan(plan);
-    match tui::run(App::new(backend))? {
+    let options = tui::Options {
+        mouse: mouse_enabled(std::env::var_os("SSHTUI_NO_MOUSE").as_deref()),
+    };
+    match tui::run(App::new(backend), options)? {
         Exit::Quit => Ok(ExitCode::SUCCESS),
         Exit::Connect(args) => {
             let code = run_interactive(&ssh, &args)?;
@@ -135,7 +146,19 @@ fn run() -> anyhow::Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliAction, parse_args};
+    use super::{CliAction, OsStr, mouse_enabled, parse_args};
+
+    #[test]
+    fn mouse_is_enabled_unless_the_environment_value_is_nonempty_and_nonzero() {
+        for (value, enabled) in [
+            (None, true),
+            (Some(""), true),
+            (Some("0"), true),
+            (Some("1"), false),
+        ] {
+            assert_eq!(mouse_enabled(value.map(OsStr::new)), enabled);
+        }
+    }
 
     #[test]
     fn no_arguments_runs_tui() {

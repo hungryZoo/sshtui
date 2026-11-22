@@ -7,22 +7,48 @@ mod list;
 mod overlays;
 mod theme;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Backend, Mode, TextInput};
+use crate::app::{App, Backend, ClickTarget, Mode, TextInput};
 
-use self::layout::{below, render_lines, row};
+use self::layout::{below, left, render_lines, right_of, row};
 
-type KeyHint = (&'static str, &'static str);
+type KeyHint = (&'static str, &'static str, Option<KeyCode>);
 
-/// Draws the whole screen for the current application state. No I/O.
-pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
+/// Clickable regions of the last rendered frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HitMap {
+    regions: Vec<(Rect, ClickTarget)>,
+}
+
+impl HitMap {
+    /// Returns the target at a terminal cell, preferring later regions.
+    pub fn hit(&self, column: u16, row: u16) -> Option<&ClickTarget> {
+        self.regions
+            .iter()
+            .rev()
+            .find(|(area, _)| area.contains((column, row).into()))
+            .map(|(_, target)| target)
+    }
+
+    fn add(&mut self, area: Rect, target: ClickTarget) {
+        if !area.is_empty() {
+            self.regions.push((area, target));
+        }
+    }
+}
+
+/// Draws the screen and returns its clickable regions. No I/O.
+pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) -> HitMap {
     let area = frame.area();
+    let mut hits = HitMap::default();
     if area.is_empty() {
-        return;
+        return hits;
     }
     let mut body = below(area, 1);
     body.height = body.height.saturating_sub(1);
@@ -39,52 +65,61 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
 
     let (title, help) = match app.mode() {
         Mode::List => {
-            list::render(frame, app, body, true);
-            (list::title(app), help_line(list::help(app)))
+            list::render(frame, app, body, true, &mut hits);
+            (list::title(app), list::help(app).collect())
         }
         Mode::Form(state) => {
-            form::render(frame, app, state, body, true);
-            (form::title(state), help_line(form::help(state)))
+            form::render(frame, app, state, body, true, &mut hits);
+            (form::title(state), form::help(state).to_vec())
         }
         Mode::Confirm(state) => {
-            overlays::confirm(frame, state, app.backend().paths(), body);
+            overlays::confirm(frame, state, app.backend().paths(), body, &mut hits);
             (
                 state.title(),
-                help_line([
-                    ("y/Enter", "confirm"),
-                    ("n/Esc", "cancel"),
-                    ("Up/Down", "scroll"),
-                ]),
+                vec![
+                    ("y/Enter", "confirm", Some(KeyCode::Char('y'))),
+                    ("n/Esc", "cancel", Some(KeyCode::Char('n'))),
+                    ("Up/Down", "scroll", None),
+                ],
             )
         }
         Mode::KeyPicker(state) => {
             let form = state.form();
-            form::render(frame, app, form, body, false);
-            overlays::key_picker(frame, state, body);
+            form::render(frame, app, form, body, false, &mut hits);
+            overlays::key_picker(frame, state, body, &mut hits);
             (
                 form::title(form),
-                help_line([("Enter", "select"), ("Esc", "cancel")]),
+                vec![
+                    ("Enter", "select", Some(KeyCode::Enter)),
+                    ("Esc", "cancel", Some(KeyCode::Esc)),
+                ],
             )
         }
         Mode::Notice(state) => {
-            list::render(frame, app, body, false);
-            overlays::notice(frame, state, body);
-            let help: &[_] = if state.connects() {
-                &[("Enter", "connect anyway"), ("Esc", "back to list")]
+            list::render(frame, app, body, false, &mut hits);
+            overlays::notice(frame, state, body, &mut hits);
+            let help = if state.connects() {
+                vec![
+                    ("Enter", "connect anyway", Some(KeyCode::Enter)),
+                    ("Esc", "back to list", Some(KeyCode::Esc)),
+                ]
             } else {
-                &[("Enter/Esc", "back to list")]
+                vec![("Enter/Esc", "back to list", Some(KeyCode::Enter))]
             };
-            (list::title(app), help_line(help.iter().copied()))
+            (list::title(app), help)
         }
         Mode::Update(state) => {
-            list::render(frame, app, body, false);
-            overlays::update(frame, state, body);
-            let help: &[_] = if state.can_run() {
-                &[("Enter", "update and exit"), ("Esc", "cancel")]
+            list::render(frame, app, body, false, &mut hits);
+            overlays::update(frame, state, body, &mut hits);
+            let help = if state.can_run() {
+                vec![
+                    ("Enter", "update and exit", Some(KeyCode::Enter)),
+                    ("Esc", "cancel", Some(KeyCode::Esc)),
+                ]
             } else {
-                &[("Esc", "close")]
+                vec![("Esc", "close", Some(KeyCode::Esc))]
             };
-            (list::title(app), help_line(help.iter().copied()))
+            (list::title(app), help)
         }
     };
 
@@ -93,18 +128,25 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
     } else {
         None
     };
-    frame.render_widget(header(title, update_notice, area.width), row(area, 0));
+    render_header(frame, title, update_notice, row(area, 0), &mut hits);
     if let Some(lines) = status {
         let status_area = below(area, body.bottom().saturating_sub(area.y));
         render_lines(frame, status_area, lines);
     }
     if area.height >= 2 {
-        frame.render_widget(help, row(area, area.height.saturating_sub(1)));
+        render_help(frame, help, row(area, area.height - 1), &mut hits);
     }
+    hits
 }
 
-fn header(title: String, notice: Option<String>, width: u16) -> Line<'static> {
-    let badge = if width < 8 { "sshtui" } else { " sshtui " };
+fn render_header(
+    frame: &mut Frame,
+    title: String,
+    notice: Option<String>,
+    area: Rect,
+    hits: &mut HitMap,
+) {
+    let badge = if area.width < 8 { "sshtui" } else { " sshtui " };
     let mut line = Line::from(vec![
         Span::styled(badge, theme::SELECTED),
         Span::raw(" "),
@@ -112,27 +154,43 @@ fn header(title: String, notice: Option<String>, width: u16) -> Line<'static> {
     ]);
     if let Some(notice) = notice {
         let notice = Span::styled(notice, theme::UPDATE_NOTICE);
-        if let Some(gap) = usize::from(width).checked_sub(line.width() + notice.width())
+        if let Some(gap) = usize::from(area.width).checked_sub(line.width() + notice.width())
             && gap > 0
         {
+            hits.add(
+                right_of(area, area.width - notice.width() as u16),
+                ClickTarget::UpdateNotice,
+            );
             line.push_span(Span::raw(" ".repeat(gap)));
             line.push_span(notice);
         }
     }
-    line
+    frame.render_widget(line, area);
 }
 
-fn help_line(hints: impl IntoIterator<Item = KeyHint>) -> Line<'static> {
+fn render_help(frame: &mut Frame, hints: Vec<KeyHint>, area: Rect, hits: &mut HitMap) {
     let mut line = Line::default();
-    for (index, (key, description)) in hints.into_iter().enumerate() {
+    let mut offset = 0;
+    for (index, (key, description, code)) in hints.into_iter().enumerate() {
         if index > 0 {
             line.push_span(Span::raw("  "));
+            offset += 2;
+        }
+        let width = key.width() + 1 + description.width();
+        if let Some(code) = code
+            && offset + width <= usize::from(area.width)
+        {
+            hits.add(
+                left(right_of(area, offset as u16), width as u16),
+                ClickTarget::Key(code),
+            );
         }
         line.push_span(Span::styled(key, theme::EMPHASIS));
         line.push_span(Span::raw(" "));
         line.push_span(Span::styled(description, theme::MUTED));
+        offset += width;
     }
-    line
+    frame.render_widget(line, area);
 }
 
 fn styled_wrapped(text: &str, width: u16, max_rows: u16, style: Style) -> Vec<Line<'static>> {
@@ -222,14 +280,15 @@ fn wrapped_lines(text: &str, width: u16, max_rows: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16) {
+fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16, usize) {
     let value = input.value();
     if !focused || width == 0 {
-        return (value, 0);
+        return (value, 0, 0);
     }
 
     let width = usize::from(width);
-    let mut column = input.cursor_column();
+    let cursor = input.cursor_column();
+    let mut column = cursor;
     let mut start = 0;
     // Drop whole graphemes so horizontal scrolling never exposes a partial character.
     for grapheme in Span::raw(value).styled_graphemes(theme::PLAIN) {
@@ -240,7 +299,11 @@ fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16) {
         column -= cells;
         start += grapheme.symbol.len();
     }
-    (&value[start..], column.min(width - 1) as u16)
+    (
+        &value[start..],
+        column.min(width - 1) as u16,
+        cursor - column,
+    )
 }
 
 #[cfg(test)]
