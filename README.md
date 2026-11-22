@@ -42,6 +42,7 @@ cargo install --path .
    - [공통 화면 구성](#공통-화면-구성)
    - [호스트 목록](#호스트-목록)
    - [접속 폼](#접속-폼)
+   - [호스트 키 삭제](#호스트-키-삭제)
    - [변경 확인](#변경-확인)
    - [키 목록](#키-목록)
    - [불일치 알림](#불일치-알림)
@@ -85,6 +86,7 @@ cargo install --path .
 - 저장된 호스트 목록에서 접속.
 - 접속 폼을 통한 새 접속과 닉네임을 붙인 호스트의 `~/.ssh/config` 저장.
 - 저장된 호스트 편집과 삭제.
+- 선택한 호스트의 호스트 키 항목을 `known_hosts`에서 삭제. 호스트 키가 바뀐 서버에 다시 접속하기 전 정리 용도.
 - 키 목록, 네이티브 파일 다이얼로그, 직접 입력을 통한 키 파일 지정.
 
 ### 동작 방식
@@ -163,6 +165,7 @@ sshtui
 - 오른쪽 상세 열에 별칭과 적용값의 `user@address`, `User`, `Address`, `Port`, `Key file`, `Source`(파일과 줄 번호) 표시. 적용값 조회 실패 시 `Effective settings:` 뒤에 오류 표시. 읽기 전용 파일은 `Read-only file` 표시.
 - 필터 입력 중이 아니고 팝업이 닫혀 있을 때 상세 열의 `enter runs` 아래에 실행할 명령 표시. 터미널 폭 64칸 미만에서는 상세 열 생략.
 - 캐시에 새 버전이 있고 표시 공간이 충분하면 머리줄 오른쪽에 `update available u` 표시.
+- 키 안내가 화면 폭을 넘치면 첫 쌍과 마지막 쌍이 함께 들어가는 범위에서 두 쌍을 유지하고, 마지막 쌍 바로 앞부터 왼쪽으로 한 쌍씩 생략. 폭 96칸에서 필터가 적용된 목록은 `r reload` 안내가 생략되어도 `r` 키로 다시 읽기 가능.
 
 | 화면 안내 | 실제 키 | 동작 |
 |---|---|---|
@@ -170,6 +173,7 @@ sshtui
 | 없음 | `Home`, `g` / `End`, `G` | 첫 / 마지막 호스트 선택 |
 | `enter connect` | `Enter` | 선택한 호스트로 접속 |
 | `n new` / `e edit` / `d delete` | `n` / `e` / `d` | 새 접속 폼 / 선택 항목 편집 / 삭제 확인 |
+| `x forget` | `x` | 선택한 호스트의 `known_hosts` 항목 삭제 확인 화면 열기. 필터 입력 중에는 문자 `x` 입력 |
 | `/ filter` | `/` | 필터 입력 시작 |
 | `↑↓ select` | `↑`, `↓` | 필터 입력 중 결과에서 선택 이동 |
 | `enter apply filter` | `Enter` | 필터 입력을 끝내고 결과 유지 |
@@ -221,10 +225,35 @@ sshtui
 - 1회 접속에서 빈 `User`는 주소의 `user@` 부분 생략, 빈 `Port`와 `Key file`은 각각 `-p`와 `-i` 생략. 새 호스트 저장 시 빈 필드에 해당하는 설정 옵션도 생략.
 - 키 파일 지정 방법은 키 목록 선택, 파일 다이얼로그 선택, `Key file` 직접 입력. 직접 입력에 사용한 `~` 또는 `~/` 경로는 1회 접속 인자를 만들 때 홈 디렉터리로 확장. 저장 시에는 입력한 경로 표기를 설정 파일에 기록.
 
+### 호스트 키 삭제
+
+- 대상 파일은 SSH 디렉터리의 `known_hosts` 하나. 읽기 전용 config 파일에 정의된 호스트에서도 사용 가능.
+- 찾는 이름은 `ssh -G`의 유효 설정 기준. 비어 있지 않은 `HostKeyAlias`가 있으면 포트와 관계없이 그 값 사용. 없으면 `HostName`, 그 값도 없으면 목록의 별칭 사용. 이 경우 포트가 22가 아니면 `[host]:port` 형식 사용. 찾는 이름을 ASCII 소문자로 변환하고 평문 이름의 ASCII 대소문자를 무시하여 대조.
+
+| 별칭 | `HostKeyAlias` | `HostName` | 포트 | 찾는 이름 |
+|---|---|---|---|---|
+| `web` | `Web-Key` | `Web.Example.com` | 2222 | `web-key` |
+| `web` | 없음 | `Web.Example.com` | 22 | `web.example.com` |
+| `dev` | 없음 | 없음 | 2222 | `[dev]:2222` |
+
+- 삭제 대상은 찾는 이름과 정확히 일치하는 평문 항목과 해시 항목. 평문 이름이 쉼표로 나열된 경우 하나라도 일치하면 줄 전체 삭제. 해시 항목(`|1|salt|hash`)은 소문자로 변환한 이름을 HMAC-SHA1로 대조.
+- 주석, `@cert-authority`와 `@revoked` 줄, 와일드카드(`*`, `?`)나 부정(`!`) 패턴으로만 걸리는 줄은 유지. 와일드카드로 걸리는 줄도 지우는 `ssh-keygen -R`보다 삭제 범위가 좁음.
+- `x`로 확인 화면 열기. 제목 `Forget host key for <별칭>`, 요약 줄 `N entries for <이름> will be removed`(한 줄이면 `1 entry for <이름> will be removed`), 삭제될 줄의 diff, 공간이 충분할 때 백업 안내 표시. `y` 또는 `Enter`로 삭제, `n` 또는 `Esc`로 취소.
+
+| 상황 | 메시지 |
+|---|---|
+| 파일 또는 일치 항목 없음 | `No entry for <이름> in <경로>` |
+| 삭제 완료 | `Removed N known_hosts entries for <이름> (backup: <경로>)` (한 줄이면 `Removed 1 known_hosts entry for <이름> (backup: <경로>)`) |
+| 유효 설정 조회 실패 | `Cannot resolve <별칭>: <원인>` |
+
+- config와 같은 쓰기 방식. 계획 뒤 파일이 바뀌었으면 중단, 숨김 백업 `.known_hosts.sshtui.bak` 생성, 임시 파일로 교체, 기존 권한 유지. [쓰기 공통 규칙](#쓰기-공통-규칙) 참조.
+- `known_hosts2`, `UserKnownHostsFile`로 지정한 다른 파일, `/etc/ssh/ssh_known_hosts`는 삭제 대상에서 제외. DNS 조회를 하지 않으므로 호스트 이름과 별도 줄에 저장된 IP 주소 항목은 유지. 닉네임 없이 바로 접속한 주소는 호스트 목록에 없어 삭제 대상에서 제외.
+
 ### 변경 확인
 
 - 편집 제목은 `Save <닉네임>`, 삭제 제목은 `Delete <닉네임>`.
 - 요약 줄에 삭제와 추가 중 큰 줄 수를 `N lines will change`로 표시. 한 줄이면 `1 line will change`. 삭제 수와 추가 수는 각각 `-N`, `+N`으로 표시하며 0인 항목은 생략.
+- [호스트 키 삭제](#호스트-키-삭제)에서는 요약 줄에 삭제할 항목 수와 찾는 이름을 표시하고 확정 키 안내는 `y forget`으로 표시.
 - 본문의 왼쪽 두 열은 변경 전과 변경 후 줄 번호. 삭제 줄은 이전 번호와 `-`, 추가 줄은 이후 번호와 `+`, 문맥 줄은 양쪽 번호 표시. 떨어진 변경 구간 사이에 `⋯` 표시.
 - 기존 파일이 있고 공간이 충분하면 본문 하단에 `The current file is kept as <백업 경로>` 표시.
 
@@ -263,7 +292,7 @@ sshtui
 | 호스트 줄 클릭 | 호스트 선택 |
 | 호스트 줄 더블 클릭(같은 칸, 400ms 이내) | 선택한 호스트로 접속 |
 | 휠(목록, 변경 확인, 키 목록) | 목록과 키 목록에서 선택 이동, 변경 확인에서 스크롤 |
-| 맨 아래 키 안내 클릭 | 해당 키와 같은 동작. `ctrl+u`와 `↑↓`는 클릭 대상에서 제외 |
+| 맨 아래 키 안내 클릭 | 목록의 `x forget`을 포함해 해당 키와 같은 동작. `ctrl+u`와 `↑↓`는 클릭 대상에서 제외 |
 | 머리줄의 업데이트 알림 클릭 | `Update sshtui` 팝업 열기 |
 | 폼 필드 클릭 | 포커스 이동과 커서 위치 지정. 읽기 전용 필드는 포커스만 이동 |
 | 키 목록의 줄 클릭 | 키 선택과 확정 |
@@ -490,10 +519,11 @@ TrueColor 모드의 호버 대상과 색 변화.
 
 | 구분 | 항목 | 상태 |
 |---|---|---|
-| 자동 | 단위 테스트 404개(`cargo test`)로 확인한 config 읽기와 편집과 쓰기, 검증, ssh 인자, 비밀키 판별, 화면 상태, 렌더링, 마우스 클릭 영역, 업데이트 확인 | 통과 (macOS) |
+| 자동 | 단위 테스트 437개(`cargo test --offline`)로 확인한 config 읽기와 편집과 쓰기, 검증, ssh 인자, 비밀키 판별, 화면 상태, 렌더링, 마우스 클릭 영역, 업데이트 확인, known_hosts 항목 대조와 삭제(SHA-1, HMAC-SHA1 기준값, `ssh-keygen -H`가 만든 해시 항목) | 통과 (macOS) |
 | 자동 | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | 통과 |
 | 자동 | `cargo check --target x86_64-pc-windows-msvc`, `--target x86_64-unknown-linux-gnu` | 통과 (타입 검사만) |
 | 수동 | 임시 ssh 디렉터리에서 목록, 새 접속 저장, 편집, 삭제, 외부 변경 감지, 불일치 알림, 1회 접속의 ssh 실행과 종료 코드 | 확인 (macOS, tmux) |
+| 수동 | 호스트 키 삭제: 임시 SSH 디렉터리에 평문 항목과 `ssh-keygen -H`로 해시한 항목이 섞인 `known_hosts`를 두고 `x` → 확인 화면 → `y`로 삭제. `example.com`은 같은 파일에 `ssh-keygen -R`을 적용한 결과와 바이트 일치, `[10.0.0.5]:2222`는 `ssh-keygen -R`이 함께 지우는 와일드카드 줄(`!example.com,*`) 1개만 차이. 백업 파일 `.known_hosts.sshtui.bak`의 내용과 권한(`0600`) 유지, `HostKeyAlias` 호스트의 이름 계산, 항목 없음 메시지(`No entry for <이름> in <경로>`), `n` 취소, 키 안내 클릭, 필터 입력 중 `x` 입력, 폭 96에서 필터 적용 시 키 안내 | 확인 (macOS, tmux) |
 | 수동 | 마우스 범위는 tmux 창에 SGR 마우스 시퀀스를 입력해 확인한 호스트 줄 클릭과 더블 클릭 접속, 휠, 키 안내, 필터 바, 필드 클릭, 팝업 바깥 클릭, 누른 곳과 다른 곳에서 뗀 경우의 취소, 종료 뒤 남는 입력 없음, `SSHTUI_NO_MOUSE` | 확인 (macOS, tmux) |
 | 수동 | 디자인 목업(docs/design) 6장과의 대조: 목업과 같은 표본 호스트 12개, 100x28 창에서 목록, 필터, 새 접속, 편집 오류, 키 목록, 변경 확인 화면의 배치와 문구, 트루컬러 색 코드(배경, 강조, 삭제 줄 배경 등), COLORTERM 미설정 시 16색 전환 | 확인 (macOS, tmux) |
 | 수동 | 업데이트 확인 범위는 `latest=9.9.9`일 때의 알림과 `Update sshtui` 팝업, 24시간 이내 캐시 유지, 오래된 캐시의 시도 시각 선기록, `SSHTUI_NO_UPDATE_CHECK`, `--check-update` 종료 코드 `11`(릴리스 없음, `curl` 없음), `Update sshtui` 팝업에서 `Enter` 후 터미널 복원과 명령 실행, 실패 시 종료 코드 `1` | 확인 (macOS, tmux, 임시 HOME) |
@@ -501,6 +531,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 | 미검증 | 설치 방식별 업그레이드 명령의 실제 성공(Homebrew, cargo, install.sh, .deb, .rpm) | 미검증 |
 | 미검증 | 네이티브 다이얼로그의 실제 표시와 숨김파일 표시(macOS, Windows, Linux) | 미검증 |
 | 미검증 | 실제 서버 접속 성공(암호, 패스프레이즈, 호스트 키 확인 흐름) | 미검증 |
+| 미검증 | 호스트 키가 실제로 바뀐 서버에서 삭제 후 재접속 | 미검증 |
 | 미검증 | 실제 터미널 앱에서의 색 표현과 글꼴 렌더링(목업의 JetBrains Mono, 줄 간격 24px은 터미널 설정에 따름) | 미검증 |
 | 수동 | 호버: tmux 창에 마우스 이동 시퀀스를 입력해 호스트 줄 배경의 단계적 변화(진입 중간값, 완료값, 이탈 후 복귀), 선택된 줄, 필터 바, 키 안내의 호버 색, 16색 모드의 밑줄, 애니메이션 종료 후 유휴 CPU 0% | 확인 (macOS, tmux) |
 | 수동 | esc: 필터 적용 상태에서 첫 Esc는 필터 해제, 폼에서 Esc는 목록 복귀, 필터 없는 목록에서 Esc는 종료 코드 0으로 종료 | 확인 (macOS, tmux) |
@@ -563,6 +594,19 @@ TrueColor 모드의 호버 대상과 색 변화.
 9. SSH 세션에서 1단계와 2단계를 실행한 뒤 `n`, `Ctrl+O`. `Browse is unavailable over SSH (no local desktop session)`이 표시되고 다이얼로그가 열리지 않는지 확인.
 10. 접속 가능한 테스트 서버의 주소와 필요한 `User`, `Port`를 `n` 폼에 입력하고 닉네임을 비운 채 `Enter`. `ssh`에서 인증한 뒤 원격 셸에서 `exit`. 다시 실행해 같은 입력에 `Nickname`으로 `live-test`를 지정하고 `Enter`로 저장 후 접속. 키 인증이 필요하면 `Key file`에 임시 디렉터리에 별도로 준비한 테스트 키를 지정. 두 접속이 종료된 뒤 로컬 터미널에서 입력 에코와 커서가 정상인지 확인.
 11. `ssh -F "$ssh_dir/config" live-test` 실행. 같은 서버에 접속하고 원격 셸에서 `exit`로 종료할 수 있는지 확인.
+12. 1단계의 임시 디렉터리에 표본 `known_hosts` 생성 후 실행. `web`을 선택하고 `x`를 눌러 `[127.0.0.1]:2222` 항목 한 줄이 diff에 삭제로 표시되는지 확인. `y`로 삭제 후 목록에서 `Esc`로 종료.
+
+    ```bash
+    printf '%s\n' '# retained fixture' \
+      '[127.0.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEk9zFM25++kJaRZ0WiPq2Rf/WXTnx0PsWWfN4crdP6X' \
+      > "${ssh_dir:?}/known_hosts"
+    cp "$ssh_dir/known_hosts" "$ssh_dir/known_hosts.before"
+    SSHTUI_SSH_DIR="$ssh_dir" sshtui
+    diff -u "$ssh_dir/known_hosts.before" "$ssh_dir/known_hosts"
+    cmp "$ssh_dir/known_hosts.before" "$ssh_dir/.known_hosts.sshtui.bak"
+    ```
+
+    `diff`에는 호스트 키 한 줄 삭제만 표시되고, `cmp`는 출력 없이 종료되는 것이 기대 결과.
 
 ### 마우스 확인
 
@@ -647,6 +691,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 | `src/ui/` | 호스트 목록(`list.rs`), 접속 폼(`form.rs`), 변경 확인과 팝업(`overlays.rs`), 레이아웃(`layout.rs`), 테마(`theme.rs`), 공통 렌더링과 클릭 영역(`mod.rs`), 렌더링 테스트(`tests.rs`) |
 | `src/tui.rs` | 터미널 초기화와 복원, 이벤트 루프 |
 | `src/config/` | 설정 파싱, `Include` 확장, 편집, diff, 백업과 쓰기 |
+| `src/known_hosts/` | 이름 계산, 줄 대조, 삭제 계획(`mod.rs`), 해시된 호스트 이름 대조 전용 SHA-1, HMAC-SHA1, base64 해독(`hash.rs`) |
 | `src/ssh/` | 인자 구성, 적용값 조회, `ssh` 실행 |
 | `src/dialog/` | 플랫폼별 파일 다이얼로그 |
 | `src/keys.rs` | 키 파일 탐색과 비밀키 헤더 판별 |
