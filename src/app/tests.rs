@@ -847,6 +847,7 @@ fn edit_form_uses_block_values_placeholders_and_read_only_lines() {
         "web",
         EffectiveConfig {
             host_name: Some("real.example.com".into()),
+            host_key_alias: None,
             user: Some("other".into()),
             port: Some("22".into()),
             identity_files: vec!["~/first".into(), "~/second".into()],

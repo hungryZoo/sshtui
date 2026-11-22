@@ -56,6 +56,11 @@ impl PendingWrite {
         Self::new(file.path.clone(), Some(file.parsed.bytes()), updated)
     }
 
+    /// Plans replacing an existing file whose loaded bytes are `original`.
+    pub fn replacement(path: PathBuf, original: &[u8], updated: Vec<u8>) -> Self {
+        Self::new(path, Some(original), updated)
+    }
+
     /// Returns whether the file already has exactly the bytes to be written.
     pub fn is_noop(&self) -> bool {
         self.original.as_deref() == Some(self.updated.as_slice())
@@ -193,6 +198,19 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn constructs_a_replacement_with_the_standard_preview_context() {
+        let path = PathBuf::from("known_hosts");
+        let original = b"first\nsecond\nthird\nremoved\nfourth\nfifth\nsixth\n";
+        let updated = b"first\nsecond\nthird\nfourth\nfifth\nsixth\n";
+        let pending = PendingWrite::replacement(path.clone(), original, updated.to_vec());
+
+        assert_eq!(pending.path, path);
+        assert_eq!(pending.original.as_deref(), Some(original.as_slice()));
+        assert_eq!(pending.updated, updated);
+        assert_eq!(pending.hunks, diff_lines(original, updated, DIFF_CONTEXT));
     }
 
     #[test]

@@ -60,6 +60,7 @@ impl FakeBackend {
             effective: Ok(EffectiveConfig {
                 user: Some("alice".into()),
                 host_name: Some("www.example.com".into()),
+                host_key_alias: None,
                 port: Some("2222".into()),
                 identity_files: vec!["~/.ssh/first".into(), "~/.ssh/second".into()],
             }),
@@ -270,6 +271,7 @@ fn mockup_list() -> App<FakeBackend> {
     backend.effective = Ok(EffectiveConfig {
         user: Some("deploy".into()),
         host_name: Some("203.0.113.10".into()),
+        host_key_alias: None,
         port: Some("22".into()),
         identity_files: vec!["~/.ssh/id_ed25519".into()],
     });

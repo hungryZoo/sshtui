@@ -14,6 +14,8 @@ use super::exec::{self, SshError};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EffectiveConfig {
     pub host_name: Option<String>,
+    /// Name ssh uses instead of the host name when looking up host keys.
+    pub host_key_alias: Option<String>,
     pub user: Option<String>,
     pub port: Option<String>,
     /// In the order printed by ssh.
@@ -33,6 +35,7 @@ pub fn parse_ssh_g(output: &str) -> EffectiveConfig {
 
         match key {
             "hostname" => config.host_name = Some(value.into()),
+            "hostkeyalias" => config.host_key_alias = Some(value.into()),
             "user" => config.user = Some(value.into()),
             "port" => config.port = Some(value.into()),
             "identityfile" => config.identity_files.push(value.into()),
@@ -196,6 +199,7 @@ mod tests {
             parse_ssh_g(OUTPUT),
             EffectiveConfig {
                 host_name: Some("web.example.com".into()),
+                host_key_alias: None,
                 user: Some("alice".into()),
                 port: Some("2222".into()),
                 identity_files: vec![
@@ -204,6 +208,16 @@ mod tests {
                     "/abs/other".into()
                 ],
             }
+        );
+    }
+
+    #[test]
+    fn parses_host_key_alias_when_present() {
+        let config = parse_ssh_g("hostname web.example.com\nhostkeyalias my-alias\n");
+        assert_eq!(config.host_key_alias.as_deref(), Some("my-alias"));
+        assert_eq!(
+            parse_ssh_g("hostname web.example.com\n").host_key_alias,
+            None
         );
     }
 
