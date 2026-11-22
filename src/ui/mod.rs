@@ -1,17 +1,22 @@
 //! Rendering with ratatui.
 
+mod buttons;
 mod form;
+mod layout;
 mod list;
 mod overlays;
+mod theme;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Backend, Mode, StatusLevel, TextInput};
+use crate::app::{App, Backend, Mode, TextInput};
+
+use self::layout::{below, render_lines, row};
+
+type KeyHint = (&'static str, &'static str);
 
 /// Draws the whole screen for the current application state. No I/O.
 pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
@@ -22,32 +27,34 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
     let mut body = below(area, 1);
     body.height = body.height.saturating_sub(1);
     let status = app.status().map(|status| {
-        let lines = wrapped_lines(&status.text, area.width, body.height.min(3));
-        let height = lines.len() as u16;
-        body.height -= height;
-        let style = match status.level {
-            StatusLevel::Info => Style::default(),
-            StatusLevel::Warning => Style::default().fg(Color::Yellow),
-            StatusLevel::Error => Style::default().fg(Color::Red),
-        };
-        let status_area = Rect::new(body.x, body.bottom(), body.width, height);
-        (Paragraph::new(lines).style(style), status_area)
+        let lines = styled_wrapped(
+            &status.text,
+            area.width,
+            body.height.min(3),
+            theme::status(status.level),
+        );
+        body.height = body.height.saturating_sub(lines.len() as u16);
+        lines
     });
 
     let (title, help) = match app.mode() {
         Mode::List => {
             list::render(frame, app, body, true);
-            (list::title_line(app, area.width), list::help(app))
+            (list::title(app), help_line(list::help(app)))
         }
         Mode::Form(state) => {
             form::render(frame, app, state, body, true);
-            (Line::from(form::title(state)).bold(), form::help(state))
+            (form::title(state), help_line(form::help(state)))
         }
         Mode::Confirm(state) => {
             overlays::confirm(frame, state, app.backend().paths(), body);
             (
-                Line::from(state.title()).bold(),
-                "y/Enter confirm  n/Esc cancel  Up/Down scroll",
+                state.title(),
+                help_line([
+                    ("y/Enter", "confirm"),
+                    ("n/Esc", "cancel"),
+                    ("Up/Down", "scroll"),
+                ]),
             )
         }
         Mode::KeyPicker(state) => {
@@ -55,39 +62,112 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
             form::render(frame, app, form, body, false);
             overlays::key_picker(frame, state, body);
             (
-                Line::from(form::title(form)).bold(),
-                "Enter select  Esc cancel",
+                form::title(form),
+                help_line([("Enter", "select"), ("Esc", "cancel")]),
             )
         }
         Mode::Notice(state) => {
             list::render(frame, app, body, false);
             overlays::notice(frame, state, body);
-            let help = if state.connects() {
-                "Enter connect anyway  Esc back to list"
+            let help: &[_] = if state.connects() {
+                &[("Enter", "connect anyway"), ("Esc", "back to list")]
             } else {
-                "Enter/Esc back to list"
+                &[("Enter/Esc", "back to list")]
             };
-            (Line::from(list::title(app)).bold(), help)
+            (list::title(app), help_line(help.iter().copied()))
         }
         Mode::Update(state) => {
             list::render(frame, app, body, false);
             overlays::update(frame, state, body);
-            let help = if state.can_run() {
-                "Enter update and exit  Esc cancel"
+            let help: &[_] = if state.can_run() {
+                &[("Enter", "update and exit"), ("Esc", "cancel")]
             } else {
-                "Esc close"
+                &[("Esc", "close")]
             };
-            (Line::from(list::title(app)).bold(), help)
+            (list::title(app), help_line(help.iter().copied()))
         }
     };
 
-    frame.render_widget(title, row(area, 0));
-    if let Some((status, status_area)) = status {
-        frame.render_widget(status, status_area);
+    let update_notice = if matches!(app.mode(), Mode::List) {
+        app.update_plan().map(|plan| plan.notice())
+    } else {
+        None
+    };
+    frame.render_widget(header(title, update_notice, area.width), row(area, 0));
+    if let Some(lines) = status {
+        let status_area = below(area, body.bottom().saturating_sub(area.y));
+        render_lines(frame, status_area, lines);
     }
     if area.height >= 2 {
-        frame.render_widget(Line::from(help).dim(), row(area, area.height - 1));
+        frame.render_widget(help, row(area, area.height.saturating_sub(1)));
     }
+}
+
+fn header(title: String, notice: Option<String>, width: u16) -> Line<'static> {
+    let badge = if width < 8 { "sshtui" } else { " sshtui " };
+    let mut line = Line::from(vec![
+        Span::styled(badge, theme::SELECTED),
+        Span::raw(" "),
+        Span::raw(title),
+    ]);
+    if let Some(notice) = notice {
+        let notice = Span::styled(notice, theme::UPDATE_NOTICE);
+        if let Some(gap) = usize::from(width).checked_sub(line.width() + notice.width())
+            && gap > 0
+        {
+            line.push_span(Span::raw(" ".repeat(gap)));
+            line.push_span(notice);
+        }
+    }
+    line
+}
+
+fn help_line(hints: impl IntoIterator<Item = KeyHint>) -> Line<'static> {
+    let mut line = Line::default();
+    for (index, (key, description)) in hints.into_iter().enumerate() {
+        if index > 0 {
+            line.push_span(Span::raw("  "));
+        }
+        line.push_span(Span::styled(key, theme::EMPHASIS));
+        line.push_span(Span::raw(" "));
+        line.push_span(Span::styled(description, theme::MUTED));
+    }
+    line
+}
+
+fn styled_wrapped(text: &str, width: u16, max_rows: u16, style: Style) -> Vec<Line<'static>> {
+    wrapped_lines(text, width, max_rows)
+        .into_iter()
+        .map(|mut line| {
+            for span in &mut line.spans {
+                span.style = style;
+            }
+            line
+        })
+        .collect()
+}
+
+/// Wraps values in their own column and writes the label on the first row.
+fn labeled_lines(
+    label: &str,
+    value: &str,
+    width: u16,
+    label_width: u16,
+    max_rows: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = wrapped_lines(value, width.saturating_sub(label_width), max_rows);
+    if lines.is_empty() && width > 0 && max_rows > 0 {
+        lines.push(Line::default());
+    }
+    for (index, line) in lines.iter_mut().enumerate() {
+        let label = if index == 0 { label } else { "" };
+        let width = usize::from(label_width);
+        line.spans.insert(
+            0,
+            Span::styled(format!("{label:<width$.width$}"), theme::MUTED),
+        );
+    }
+    lines
 }
 
 fn wrapped_lines(text: &str, width: u16, max_rows: u16) -> Vec<Line<'static>> {
@@ -103,7 +183,7 @@ fn wrapped_lines(text: &str, width: u16, max_rows: u16) -> Vec<Line<'static>> {
         let mut line = String::new();
         let mut cells = 0;
         let mut word_break = None;
-        'graphemes: for grapheme in Span::raw(logical_line).styled_graphemes(Style::default()) {
+        'graphemes: for grapheme in Span::raw(logical_line).styled_graphemes(theme::PLAIN) {
             let symbol = grapheme.symbol;
             let symbol_width = symbol.width();
             if symbol_width > width {
@@ -142,38 +222,6 @@ fn wrapped_lines(text: &str, width: u16, max_rows: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn row(area: Rect, offset: u16) -> Rect {
-    Rect::new(
-        area.x,
-        area.y.saturating_add(offset),
-        area.width,
-        u16::from(offset < area.height),
-    )
-}
-
-fn below(area: Rect, rows: u16) -> Rect {
-    Rect::new(
-        area.x,
-        area.y.saturating_add(rows.min(area.height)),
-        area.width,
-        area.height.saturating_sub(rows),
-    )
-}
-
-fn selectable_list<'a>(
-    frame: &mut Frame,
-    area: Rect,
-    items: impl IntoIterator<Item = Line<'a>>,
-    selection: Option<usize>,
-) {
-    let list = List::new(items).highlight_style(Style::default().reversed());
-    frame.render_stateful_widget(
-        list,
-        area,
-        &mut ListState::default().with_selected(selection),
-    );
-}
-
 fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16) {
     let value = input.value();
     if !focused || width == 0 {
@@ -184,7 +232,7 @@ fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16) {
     let mut column = input.cursor_column();
     let mut start = 0;
     // Drop whole graphemes so horizontal scrolling never exposes a partial character.
-    for grapheme in Span::raw(value).styled_graphemes(Style::default()) {
+    for grapheme in Span::raw(value).styled_graphemes(theme::PLAIN) {
         let cells = grapheme.symbol.width();
         if column < width || cells > column {
             break;

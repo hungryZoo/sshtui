@@ -1,50 +1,76 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Stylize;
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
-use unicode_width::UnicodeWidthStr;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Clear;
 
 use crate::app::{ConfirmState, KeyPickerState, NoticeState, UpdateState};
-use crate::config::{DiffLine, DiffTag};
+use crate::config::{DiffHunk, DiffLine, DiffTag};
 use crate::paths::SshPaths;
 
-use super::{below, row, selectable_list, wrapped_lines};
+use super::buttons::{ButtonKind, render_buttons};
+use super::layout::{
+    below, draw_panel, has_border, inset_horizontal, panel_title, render_lines, row, visible_rows,
+};
+use super::{labeled_lines, styled_wrapped, theme, wrapped_lines};
 
+/// Draws the file and diff for a pending change.
 pub(super) fn confirm(frame: &mut Frame, state: &ConfirmState, paths: &SshPaths, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let path = paths.abbreviate_home(state.path());
-    let path_lines = wrapped_lines(&path, area.width, area.height.min(2));
-    let path_height = path_lines.len() as u16;
-    frame.render_widget(
-        Paragraph::new(path_lines),
-        Rect::new(area.x, area.y, area.width, path_height),
+    let area = draw_panel(frame, area, Some(panel_title(&state.title())), true);
+    let area = inset_horizontal(area);
+    let (content, buttons) = split_footer(area);
+    render_buttons(
+        frame,
+        buttons,
+        &[
+            ("Confirm y", ButtonKind::Primary),
+            ("Cancel n", ButtonKind::Secondary),
+        ],
     );
+    let path = paths.abbreviate_home(state.path());
+    let path_lines = styled_wrapped(&path, content.width, content.height.min(2), theme::MUTED);
+    let diff = below(render_lines(frame, content, path_lines), 1);
+    render_diff(frame, state.hunks(), state.scroll(), diff);
+}
 
-    let mut rows = below(area, path_height).rows();
-    let mut skip = state.scroll();
+fn render_diff(frame: &mut Frame, hunks: &[DiffHunk], mut skip: usize, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    let number_width = hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .flat_map(|line| [line.old_line, line.new_line])
+        .flatten()
+        .max()
+        .map_or(4, |number| number.to_string().len().max(4));
+
+    let mut rows = area.rows();
     let mut shown_hunk = false;
-    for hunk in state.hunks() {
+    for hunk in hunks {
         if skip >= hunk.lines.len() {
             skip -= hunk.lines.len();
             continue;
         }
         if shown_hunk {
             let Some(row) = rows.next() else { return };
-            frame.render_widget(Line::from("─".repeat(usize::from(row.width))).dim(), row);
+            frame.render_widget(
+                Span::styled("─".repeat(usize::from(row.width)), theme::MUTED),
+                row,
+            );
         }
         for change in hunk.lines.iter().skip(skip) {
             let Some(row) = rows.next() else { return };
-            frame.render_widget(diff_line(change), row);
+            frame.render_widget(diff_line(change, number_width), row);
         }
         skip = 0;
         shown_hunk = true;
     }
 }
 
-fn diff_line(change: &DiffLine) -> Line<'_> {
+fn diff_line(change: &DiffLine, width: usize) -> Line<'static> {
     let old = change
         .old_line
         .map(|number| number.to_string())
@@ -53,103 +79,145 @@ fn diff_line(change: &DiffLine) -> Line<'_> {
         .new_line
         .map(|number| number.to_string())
         .unwrap_or_default();
-    let marker = match change.tag {
-        DiffTag::Context => ' ',
-        DiffTag::Removed => '-',
-        DiffTag::Added => '+',
+    let (marker, style) = match change.tag {
+        DiffTag::Context => (' ', theme::PLAIN),
+        DiffTag::Removed => ('-', theme::ERROR),
+        DiffTag::Added => ('+', theme::SUCCESS),
     };
-    let line = Line::from(format!("{old:>4} {new:>4} {marker} {}", change.text));
-    match change.tag {
-        DiffTag::Context => line.dim(),
-        DiffTag::Removed => line.red(),
-        DiffTag::Added => line.green(),
+    Line::from(vec![
+        Span::styled(format!("{old:>width$} {new:>width$} "), theme::MUTED),
+        Span::styled(format!("{marker} {}", change.text), style),
+    ])
+}
+
+/// Draws the available keys over the form.
+pub(super) fn key_picker(frame: &mut Frame, state: &KeyPickerState, body: Rect) {
+    let keys = state.keys();
+    let bounds = popup_bounds(body, 74, keys.len());
+    let area = draw_popup(frame, bounds, "Select a key file");
+    let selection = state.selection();
+    for (index, rect) in visible_rows(area, keys.len(), Some(selection)) {
+        frame.render_widget(Span::raw(keys[index].label()), rect);
+        if index == selection {
+            frame.buffer_mut().set_style(rect, theme::SELECTED);
+        }
     }
 }
 
-pub(super) fn key_picker(frame: &mut Frame, state: &KeyPickerState, body: Rect) {
-    let area = popup(frame, body, "Select a key file", state.keys().len(), 74);
-    selectable_list(
-        frame,
-        area,
-        state.keys().iter().map(|key| Line::from(key.label())),
-        Some(state.selection()),
-    );
-}
-
+/// Draws the acknowledgment message and its actions.
 pub(super) fn notice(frame: &mut Frame, state: &NoticeState, body: Rect) {
-    let width = usize::from(popup_width(body, 104).saturating_sub(2).max(1));
-    let rows = state
-        .lines()
-        .iter()
-        .map(|line| 1 + line.width().div_ceil(width))
-        .sum();
-    let area = popup(frame, body, state.title(), rows, 104);
-    let lines: Vec<_> = state
-        .lines()
-        .iter()
-        .map(|line| Line::from(line.as_str()))
-        .collect();
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    const MAX_WIDTH: u16 = 104;
+    let width = popup_content_width(body, MAX_WIDTH);
+    let lines = styled_wrapped(
+        &state.lines().join("\n"),
+        width,
+        body.height,
+        theme::WARNING,
+    );
+    let bounds = popup_bounds(body, MAX_WIDTH, lines.len().saturating_add(1));
+    let area = draw_popup(frame, bounds, state.title());
+    let (content, footer) = split_footer(area);
+    render_lines(frame, content, lines);
+    let buttons: &[_] = if state.connects() {
+        &[
+            ("Connect anyway", ButtonKind::Primary),
+            ("Back", ButtonKind::Secondary),
+        ]
+    } else {
+        &[("OK", ButtonKind::Primary)]
+    };
+    render_buttons(frame, footer, buttons);
 }
 
+/// Draws update details and the available actions.
 pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect) {
     const MAX_WIDTH: u16 = 104;
-    let mut details = vec![
-        format!("Current: {}", state.current()),
-        format!("Latest: {}", state.latest()),
-        format!("Installed via: {}", state.method_description()),
-    ];
+    let width = popup_content_width(body, MAX_WIDTH);
+    let label_width = 15.min(width.saturating_sub(1));
+    let mut lines = Vec::new();
+    for (label, value) in [
+        ("Current", state.current()),
+        ("Latest", state.latest()),
+        ("Installed via", &state.method_description()),
+    ] {
+        lines.extend(labeled_lines(label, value, width, label_width, body.height));
+    }
     if state.can_run() {
-        details.push("Command:".into());
-        details.extend(state.display_steps());
+        lines.push(Line::from(Span::styled("Command", theme::MUTED)));
+        for step in state.display_steps() {
+            lines.extend(wrapped_lines(&step, width, body.height));
+        }
     } else {
-        details.push(format!("Download: {}", state.release_url()));
+        lines.extend(labeled_lines(
+            "Download",
+            &state.release_url(),
+            width,
+            label_width,
+            body.height,
+        ));
     }
 
-    let width = popup_width(body, MAX_WIDTH);
-    let content_width = if width >= 3 && body.height >= 3 {
-        width - 2
+    let bounds = popup_bounds(body, MAX_WIDTH, lines.len().saturating_add(1));
+    let area = draw_popup(frame, bounds, concat!("Update ", env!("CARGO_PKG_NAME")));
+    let (content, footer) = split_footer(area);
+    render_lines(frame, content, lines);
+    let buttons: &[_] = if state.can_run() {
+        &[
+            ("Update and exit", ButtonKind::Primary),
+            ("Cancel", ButtonKind::Secondary),
+        ]
     } else {
-        width
+        &[("Close", ButtonKind::Primary)]
     };
-    let lines = wrapped_lines(&details.join("\n"), content_width, body.height);
-    let area = popup(
-        frame,
-        body,
-        concat!("Update ", env!("CARGO_PKG_NAME")),
-        lines.len(),
-        MAX_WIDTH,
-    );
-    frame.render_widget(Paragraph::new(lines), area);
+    render_buttons(frame, footer, buttons);
 }
 
-fn popup(frame: &mut Frame, body: Rect, title: &str, content_rows: usize, max_width: u16) -> Rect {
-    if body.is_empty() {
-        return body;
-    }
-    let width = popup_width(body, max_width);
-    let desired_height = u16::try_from(content_rows.saturating_add(2)).unwrap_or(u16::MAX);
-    let height = body.height.min(desired_height);
-    let area = Rect::new(
-        body.x.saturating_add((body.width - width) / 2),
-        body.y.saturating_add((body.height - height) / 2),
-        width,
-        height,
-    );
+fn split_footer(area: Rect) -> (Rect, Rect) {
+    let content_height = if area.height >= 2 {
+        area.height.saturating_sub(1)
+    } else {
+        area.height
+    };
+    (
+        Rect {
+            height: content_height,
+            ..area
+        },
+        row(area, content_height),
+    )
+}
+
+fn draw_popup(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     frame.render_widget(Clear, area);
-    if width >= 3 && height >= 3 {
-        let block = Block::bordered().title(Line::from(title).bold());
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        inner
-    } else if height >= 2 {
-        frame.render_widget(Line::from(title).bold(), row(area, 0));
+    let title = Line::from(Span::styled(format!(" {title} "), theme::BOLD));
+    if has_border(area) {
+        draw_panel(frame, area, Some(title), true)
+    } else if area.height >= 2 {
+        frame.render_widget(title, row(area, 0));
         below(area, 1)
     } else {
         area
     }
 }
 
-fn popup_width(body: Rect, max_width: u16) -> u16 {
-    (body.width - body.width / 8).min(max_width)
+fn popup_content_width(body: Rect, max_width: u16) -> u16 {
+    let bounds = popup_bounds(body, max_width, 1);
+    if has_border(bounds) {
+        bounds.width.saturating_sub(2)
+    } else {
+        bounds.width
+    }
+}
+
+fn popup_bounds(body: Rect, max_width: u16, content_rows: usize) -> Rect {
+    let width = body.width.saturating_sub(body.width / 8).min(max_width);
+    let desired_height = u16::try_from(content_rows.saturating_add(2)).unwrap_or(u16::MAX);
+    let height = body.height.min(desired_height);
+    Rect::new(
+        body.x.saturating_add(body.width.saturating_sub(width) / 2),
+        body.y
+            .saturating_add(body.height.saturating_sub(height) / 2),
+        width,
+        height,
+    )
 }
