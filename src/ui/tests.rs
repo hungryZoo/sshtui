@@ -15,6 +15,7 @@ use crate::dialog::{DialogError, PickOutcome};
 use crate::keys::{KeyInfo, PublicKeyInfo};
 use crate::paths::SshPaths;
 use crate::ssh::effective::EffectiveConfig;
+use crate::update::{InstallMethod, UpdatePlan, latest_url};
 
 const HOSTS: &str = "# Saved hosts\nHost web\nHost db\nHost queue\n";
 const MANY_HOSTS: &str =
@@ -30,6 +31,7 @@ pub(crate) struct FakeBackend {
     unavailable: Option<String>,
     hidden_hint: Option<String>,
     load_error: Option<String>,
+    update_plan: Option<UpdatePlan>,
 }
 
 impl FakeBackend {
@@ -64,6 +66,7 @@ impl FakeBackend {
             unavailable: None,
             hidden_hint: None,
             load_error: None,
+            update_plan: None,
         }
     }
 
@@ -84,6 +87,10 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn update_plan(&self) -> Option<UpdatePlan> {
+        self.update_plan.clone()
+    }
+
     fn paths(&self) -> &SshPaths {
         &self.paths
     }
@@ -639,4 +646,108 @@ fn list_scrolls_to_the_last_selected_host() {
             .modifier
             .contains(Modifier::REVERSED)
     );
+}
+
+fn update_fixture(method: InstallMethod) -> App<FakeBackend> {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.update_plan = Some(UpdatePlan {
+        current: "1.0.0".into(),
+        latest: "2.0.0".into(),
+        method,
+    });
+    App::new(backend)
+}
+
+#[test]
+fn update_notice_and_help_appear_only_with_a_plan() {
+    let notice = "v2.0.0 available (u: update)";
+    let width = 100;
+    let app = update_fixture(InstallMethod::Brew);
+    let view = draw(&app, width, 20);
+    let rows = screen(&view);
+    assert!(rows[0].starts_with("sshtui · 3 hosts"));
+    assert!(rows[0].ends_with(notice));
+    assert!(rows[19].ends_with("r reload  u update  q quit"));
+
+    let buffer = view.buffer();
+    let start = width - notice.len() as u16;
+    assert!(!buffer[(start - 1, 0)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(0, 0)].fg, Color::Reset);
+    for x in start..width {
+        assert_eq!(buffer[(x, 0)].fg, Color::Yellow);
+        assert!(buffer[(x, 0)].modifier.contains(Modifier::BOLD));
+    }
+
+    let app = App::new(FakeBackend::new(HOSTS));
+    let rows = screen(&draw(&app, width, 20));
+    assert!(!rows[0].contains(notice));
+    assert!(!rows[19].contains("u update"));
+}
+
+#[test]
+fn update_notice_is_hidden_when_it_would_not_fit() {
+    let app = update_fixture(InstallMethod::Brew);
+    let rows = screen(&draw(&app, 30, 10));
+    assert_eq!(rows[0], "sshtui · 3 hosts");
+}
+
+#[test]
+fn update_modal_shows_versions_installer_commands_and_confirmation() {
+    let mut app = update_fixture(InstallMethod::Cargo);
+    press(&mut app, KeyCode::Char('u'));
+    let command = format!(
+        "cargo install --git {} --tag v2.0.0 --locked",
+        crate::update::REPOSITORY
+    );
+    let view = draw(&app, 120, 20);
+    contains(
+        &view,
+        &[
+            "Update sshtui",
+            "Current: 1.0.0",
+            "Latest: 2.0.0",
+            "Installed via: cargo",
+            "Command:",
+            &command,
+            "Enter update and exit  Esc cancel",
+        ],
+    );
+
+    let wrapped = screen(&draw(&app, 45, 20));
+    assert!(
+        wrapped
+            .iter()
+            .any(|row| row.contains("cargo install --git"))
+    );
+    assert!(
+        wrapped
+            .iter()
+            .any(|row| row.contains("--locked") && !row.contains("cargo install"))
+    );
+}
+
+#[test]
+fn update_modal_shows_manual_download_for_unknown_installations() {
+    let mut app = update_fixture(InstallMethod::Unknown);
+    press(&mut app, KeyCode::Char('u'));
+    let view = draw(&app, 120, 20);
+    contains(
+        &view,
+        &[
+            "Update sshtui",
+            "Installed via: unknown (manual install)",
+            &format!("Download: {}", latest_url()),
+            "Esc close",
+        ],
+    );
+    assert!(!screen(&view).join("\n").contains("Enter update"));
+}
+
+#[test]
+fn update_modal_renders_in_tiny_terminals() {
+    let mut app = update_fixture(InstallMethod::Brew);
+    press(&mut app, KeyCode::Char('u'));
+    for (width, height) in [(1, 1), (5, 2), (20, 5)] {
+        draw(&app, width, height);
+    }
 }

@@ -12,6 +12,7 @@ use crate::dialog::DialogError;
 use crate::keys::KeyInfo;
 use crate::paths::SshPaths;
 use crate::ssh::args::config_file_args;
+use crate::update::InstallMethod;
 use crate::validate::Field;
 
 const HOSTS: &str = "Host web\n  HostName web.example.com\nHost db\nHost queue\n";
@@ -43,6 +44,8 @@ struct FakeBackend {
     pick_calls: Cell<usize>,
     unavailable: Option<String>,
     hidden_hint: Option<String>,
+    update_plan: Option<UpdatePlan>,
+    update_plan_calls: Cell<usize>,
 }
 
 impl FakeBackend {
@@ -74,6 +77,8 @@ impl FakeBackend {
             pick_calls: Cell::new(0),
             unavailable: None,
             hidden_hint: None,
+            update_plan: None,
+            update_plan_calls: Cell::new(0),
         }
     }
 
@@ -109,6 +114,11 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn update_plan(&self) -> Option<UpdatePlan> {
+        self.update_plan_calls.set(self.update_plan_calls.get() + 1);
+        self.update_plan.clone()
+    }
+
     fn paths(&self) -> &SshPaths {
         &self.paths
     }
@@ -1209,4 +1219,72 @@ fn paste_inserts_only_the_first_sanitized_line_into_the_active_input() {
     app.handle_paste("\te\0B\nignored");
     assert_eq!(app.filter().value(), "WeB");
     assert_eq!(names(&app), ["web"]);
+}
+
+fn update_fixture(method: InstallMethod) -> (TestApp, UpdatePlan) {
+    let plan = UpdatePlan {
+        current: "1.0.0".into(),
+        latest: "2.0.0".into(),
+        method,
+    };
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.update_plan = Some(plan.clone());
+    (App::new(backend), plan)
+}
+
+#[test]
+fn update_key_requires_a_plan_read_once_at_startup() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    key(&mut app, KeyCode::Char('u'));
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.exit().is_none());
+
+    let (mut app, plan) = update_fixture(InstallMethod::Brew);
+    key(&mut app, KeyCode::Char('r'));
+    assert_eq!(app.update_plan(), Some(&plan));
+    key(&mut app, KeyCode::Char('u'));
+    assert!(matches!(app.mode(), Mode::Update(_)));
+    assert!(app.exit().is_none());
+    assert_eq!(app.backend().update_plan_calls.get(), 1);
+}
+
+#[test]
+fn update_esc_returns_to_list_and_enter_requests_upgrade() {
+    let (mut app, plan) = update_fixture(InstallMethod::Cargo);
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.exit().is_none());
+
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.exit(), Some(&Exit::Update(plan)));
+}
+
+#[test]
+fn unknown_installation_cannot_request_upgrade() {
+    let (mut app, _) = update_fixture(InstallMethod::Unknown);
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::Update(_)));
+    assert!(app.exit().is_none());
+}
+
+#[test]
+fn update_key_is_text_while_editing_the_filter() {
+    let (mut app, _) = update_fixture(InstallMethod::Brew);
+    key(&mut app, KeyCode::Char('/'));
+    key(&mut app, KeyCode::Char('u'));
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.is_filtering());
+    assert_eq!(app.filter().value(), "u");
+}
+
+#[test]
+fn update_key_is_text_in_the_connection_form() {
+    let (mut app, _) = update_fixture(InstallMethod::Brew);
+    key(&mut app, KeyCode::Char('n'));
+    key(&mut app, KeyCode::Char('u'));
+    assert!(matches!(app.mode(), Mode::Form(_)));
+    assert_eq!(app.form().unwrap().input(FormField::Nickname).value(), "u");
 }

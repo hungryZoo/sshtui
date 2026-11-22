@@ -37,16 +37,16 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
     let (title, help) = match app.mode() {
         Mode::List => {
             list::render(frame, app, body, true);
-            (list::title(app), list::HELP)
+            (list::title_line(app, area.width), list::help(app))
         }
         Mode::Form(state) => {
             form::render(frame, app, state, body, true);
-            (form::title(state), form::help(state))
+            (Line::from(form::title(state)).bold(), form::help(state))
         }
         Mode::Confirm(state) => {
             overlays::confirm(frame, state, app.backend().paths(), body);
             (
-                state.title(),
+                Line::from(state.title()).bold(),
                 "y/Enter confirm  n/Esc cancel  Up/Down scroll",
             )
         }
@@ -54,7 +54,10 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
             let form = state.form();
             form::render(frame, app, form, body, false);
             overlays::key_picker(frame, state, body);
-            (form::title(form), "Enter select  Esc cancel")
+            (
+                Line::from(form::title(form)).bold(),
+                "Enter select  Esc cancel",
+            )
         }
         Mode::Notice(state) => {
             list::render(frame, app, body, false);
@@ -64,11 +67,21 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) {
             } else {
                 "Enter/Esc back to list"
             };
-            (list::title(app), help)
+            (Line::from(list::title(app)).bold(), help)
+        }
+        Mode::Update(state) => {
+            list::render(frame, app, body, false);
+            overlays::update(frame, state, body);
+            let help = if state.can_run() {
+                "Enter update and exit  Esc cancel"
+            } else {
+                "Esc close"
+            };
+            (Line::from(list::title(app)).bold(), help)
         }
     };
 
-    frame.render_widget(Line::from(title).bold(), row(area, 0));
+    frame.render_widget(title, row(area, 0));
     if let Some((status, status_area)) = status {
         frame.render_widget(status, status_area);
     }

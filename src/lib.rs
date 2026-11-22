@@ -10,4 +10,5 @@ pub mod ssh;
 pub mod system;
 pub mod tui;
 pub mod ui;
+pub mod update;
 pub mod validate;

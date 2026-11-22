@@ -5,6 +5,7 @@ mod confirm;
 mod form;
 mod input;
 mod list;
+mod update;
 
 use std::ffi::OsString;
 
@@ -16,6 +17,7 @@ use crate::config::{
 use crate::dialog::PickOutcome;
 use crate::ssh::args::{ArgsError, ConnectTarget, config_file_args, connect_args, preview};
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig, find_mismatches};
+use crate::update::UpdatePlan;
 use crate::validate::ValidationError;
 
 pub use self::backend::Backend;
@@ -23,6 +25,7 @@ pub use self::confirm::{ConfirmState, KeyPickerState, NoticeState};
 pub use self::form::{FormField, FormKind, FormState};
 pub use self::input::TextInput;
 pub use self::list::HostRow;
+pub use self::update::UpdateState;
 
 use self::confirm::ConfirmAction;
 use self::input::{is_ctrl, is_plain};
@@ -35,6 +38,8 @@ pub enum Exit {
     Quit,
     /// Leave the TUI and run ssh with these arguments.
     Connect(Vec<OsString>),
+    /// Leave the TUI and run the approved upgrade.
+    Update(UpdatePlan),
 }
 
 /// Severity of a status message.
@@ -62,6 +67,7 @@ pub enum Mode {
     KeyPicker(KeyPickerState),
     Confirm(ConfirmState),
     Notice(NoticeState),
+    Update(UpdateState),
 }
 
 /// Application state and the side effects available to it.
@@ -73,12 +79,14 @@ pub struct App<B: Backend> {
     status: Option<Status>,
     exit: Option<Exit>,
     full_redraw: bool,
+    update_plan: Option<UpdatePlan>,
 }
 
 impl<B: Backend> App<B> {
     /// Loads the configuration. With no hosts the app starts on the new-connection form.
     pub fn new(backend: B) -> Self {
         let mut app = Self {
+            update_plan: backend.update_plan(),
             backend,
             config: ConfigSet::default(),
             list: ListState::default(),
@@ -112,6 +120,7 @@ impl<B: Backend> App<B> {
             Mode::KeyPicker(picker) => self.handle_picker_key(picker, key),
             Mode::Confirm(confirm) => self.handle_confirm_key(confirm, key),
             Mode::Notice(notice) => self.handle_notice_key(notice, key),
+            Mode::Update(update) => self.handle_update_key(update, key),
         };
     }
 
@@ -148,6 +157,11 @@ impl<B: Backend> App<B> {
     /// Returns the most recent status message, if any.
     pub fn status(&self) -> Option<&Status> {
         self.status.as_ref()
+    }
+
+    /// Returns the cached update plan for this session.
+    pub fn update_plan(&self) -> Option<&UpdatePlan> {
+        self.update_plan.as_ref()
     }
 
     /// Returns the backend used by this application.
@@ -338,10 +352,30 @@ impl<B: Backend> App<B> {
             }
             KeyCode::Esc => self.list.clear_filter(&self.config),
             KeyCode::Char('q') => self.exit = Some(Exit::Quit),
+            KeyCode::Char('u') => {
+                return self
+                    .update_plan
+                    .clone()
+                    .map_or(Mode::List, |plan| Mode::Update(UpdateState::new(plan)));
+            }
             _ => {}
         }
         self.refresh_selected();
         Mode::List
+    }
+
+    fn handle_update_key(&mut self, update: UpdateState, key: KeyEvent) -> Mode {
+        if is_plain(key) {
+            match key.code {
+                KeyCode::Esc => return Mode::List,
+                KeyCode::Enter if update.can_run() => {
+                    self.exit = Some(Exit::Update(update.plan));
+                    return Mode::List;
+                }
+                _ => {}
+            }
+        }
+        Mode::Update(update)
     }
 
     fn writable_selection(&mut self) -> Option<HostEntry> {

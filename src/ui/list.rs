@@ -8,7 +8,13 @@ use crate::app::{App, Backend, HostRow};
 
 use super::{below, input_window, row, selectable_list};
 
-pub(super) const HELP: &str = "Enter connect  n new  e edit  d delete  / filter  r reload  q quit";
+pub(super) fn help<B: Backend>(app: &App<B>) -> &'static str {
+    if app.update_plan().is_some() {
+        "Enter connect  n new  e edit  d delete  / filter  r reload  u update  q quit"
+    } else {
+        "Enter connect  n new  e edit  d delete  / filter  r reload  q quit"
+    }
+}
 
 pub(super) fn title<B: Backend>(app: &App<B>) -> String {
     let total = app.host_count();
@@ -17,6 +23,17 @@ pub(super) fn title<B: Backend>(app: &App<B>) -> String {
     } else {
         format!("sshtui · {total} hosts")
     }
+}
+
+pub(super) fn title_line<B: Backend>(app: &App<B>, width: u16) -> Line<'static> {
+    let title = Span::from(title(app)).bold();
+    if let Some(plan) = app.update_plan() {
+        let notice = Span::from(plan.notice()).yellow().bold();
+        if let Some(gap) = usize::from(width).checked_sub(title.width() + notice.width()) {
+            return Line::from(vec![title, Span::raw(" ".repeat(gap)), notice]);
+        }
+    }
+    Line::from(title)
 }
 
 pub(super) fn render<B: Backend>(

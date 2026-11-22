@@ -10,18 +10,31 @@ use crate::keys::{self, KeyInfo};
 use crate::paths::SshPaths;
 use crate::ssh::args::config_file_args;
 use crate::ssh::effective::{EffectiveConfig, EffectiveResolver, SystemResolver};
+use crate::update::UpdatePlan;
 
 /// Backend that talks to the real file system, ssh and the native dialog.
 pub struct SystemBackend {
     paths: SshPaths,
     ssh: PathBuf,
     picker: Box<dyn FilePicker>,
+    update_plan: Option<UpdatePlan>,
 }
 
 impl SystemBackend {
     /// Creates a backend using the resolved paths, executable, and native picker.
     pub fn new(paths: SshPaths, ssh: PathBuf, picker: Box<dyn FilePicker>) -> Self {
-        Self { paths, ssh, picker }
+        Self {
+            paths,
+            ssh,
+            picker,
+            update_plan: None,
+        }
+    }
+
+    /// Sets the update plan available for this session.
+    pub fn with_update_plan(mut self, plan: Option<UpdatePlan>) -> Self {
+        self.update_plan = plan;
+        self
     }
 
     /// Path of the ssh executable.
@@ -71,6 +84,10 @@ impl Backend for SystemBackend {
 
     fn pick_file(&self) -> Result<PickOutcome, DialogError> {
         self.picker.pick_file(self.paths.ssh_dir())
+    }
+
+    fn update_plan(&self) -> Option<UpdatePlan> {
+        self.update_plan.clone()
     }
 }
 

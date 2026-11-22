@@ -5,7 +5,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{ConfirmState, KeyPickerState, NoticeState};
+use crate::app::{ConfirmState, KeyPickerState, NoticeState, UpdateState};
 use crate::config::{DiffLine, DiffTag};
 use crate::paths::SshPaths;
 
@@ -90,6 +90,37 @@ pub(super) fn notice(frame: &mut Frame, state: &NoticeState, body: Rect) {
         .map(|line| Line::from(line.as_str()))
         .collect();
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect) {
+    const MAX_WIDTH: u16 = 104;
+    let mut details = vec![
+        format!("Current: {}", state.current()),
+        format!("Latest: {}", state.latest()),
+        format!("Installed via: {}", state.method_description()),
+    ];
+    if state.can_run() {
+        details.push("Command:".into());
+        details.extend(state.display_steps());
+    } else {
+        details.push(format!("Download: {}", state.release_url()));
+    }
+
+    let width = popup_width(body, MAX_WIDTH);
+    let content_width = if width >= 3 && body.height >= 3 {
+        width - 2
+    } else {
+        width
+    };
+    let lines = wrapped_lines(&details.join("\n"), content_width, body.height);
+    let area = popup(
+        frame,
+        body,
+        concat!("Update ", env!("CARGO_PKG_NAME")),
+        lines.len(),
+        MAX_WIDTH,
+    );
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn popup(frame: &mut Frame, body: Rect, title: &str, content_rows: usize, max_width: u16) -> Rect {

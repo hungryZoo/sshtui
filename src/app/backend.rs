@@ -8,6 +8,7 @@ use crate::dialog::{DialogError, PickOutcome};
 use crate::keys::KeyInfo;
 use crate::paths::SshPaths;
 use crate::ssh::effective::EffectiveConfig;
+use crate::update::UpdatePlan;
 
 /// Every side effect the application state needs.
 pub trait Backend {
@@ -31,4 +32,8 @@ pub trait Backend {
     fn hidden_files_hint(&self) -> Option<String>;
     /// Shows the native dialog starting in the SSH directory.
     fn pick_file(&self) -> Result<PickOutcome, DialogError>;
+    /// Returns the update plan available when the session starts.
+    fn update_plan(&self) -> Option<UpdatePlan> {
+        None
+    }
 }
