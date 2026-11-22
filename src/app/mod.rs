@@ -272,6 +272,14 @@ impl<B: Backend> App<B> {
         self.list.selected_effective(&self.config)
     }
 
+    /// Previews the selected alias's SSH command using the loaded configuration.
+    pub fn selected_command(&self) -> Option<String> {
+        let entry = self.list.selected(&self.config)?;
+        self.loaded_connection_args(&ConnectTarget::Alias(entry.name.clone()))
+            .ok()
+            .map(|args| preview(&args))
+    }
+
     /// Returns the host count before applying the filter.
     pub fn host_count(&self) -> usize {
         self.config.hosts.len()
@@ -291,6 +299,11 @@ impl<B: Backend> App<B> {
         self.form()?.validation_error(field, &self.config.hosts)
     }
 
+    /// Returns the first validation error in form field order.
+    pub fn form_first_error(&self) -> Option<(FormField, ValidationError)> {
+        self.form()?.first_error(&self.config.hosts)
+    }
+
     /// Returns the live SSH command preview for the active form, if present.
     pub fn form_preview(&self) -> Option<Result<String, String>> {
         self.preview_with(|target| self.connection_args(target))
@@ -298,12 +311,14 @@ impl<B: Backend> App<B> {
 
     /// Previews the command using the loaded config snapshot without checking the filesystem.
     pub(crate) fn loaded_form_preview(&self) -> Option<Result<String, String>> {
-        self.preview_with(|target| {
-            let paths = self.backend.paths();
-            let root = paths.config_file();
-            let has_root = self.config.files.iter().any(|file| file.path == root);
-            connect_args(paths, &config_file_args(paths, has_root), target)
-        })
+        self.preview_with(|target| self.loaded_connection_args(target))
+    }
+
+    fn loaded_connection_args(&self, target: &ConnectTarget) -> Result<Vec<OsString>, ArgsError> {
+        let paths = self.backend.paths();
+        let root = paths.config_file();
+        let has_root = self.config.files.iter().any(|file| file.path == root);
+        connect_args(paths, &config_file_args(paths, has_root), target)
     }
 
     fn preview_with(

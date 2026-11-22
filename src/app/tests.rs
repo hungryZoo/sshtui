@@ -1566,3 +1566,74 @@ fn text_cursor_maps_display_cells_to_character_boundaries() {
         assert_eq!(input.cursor(), index, "column {column}");
     }
 }
+
+#[test]
+fn host_row_summaries_use_values_from_the_loaded_host_block() {
+    let mut app = App::new(FakeBackend::new(
+        "User inherited\nHost both\n  User deploy\n  HostName first.example.com\nHost address\n  HostName second.example.com\nHost user\n  User ops\nHost neither\n",
+    ));
+    assert_eq!(
+        app.filtered_hosts()
+            .map(|row| row.summary)
+            .collect::<Vec<_>>(),
+        [
+            "deploy@first.example.com",
+            "second.example.com",
+            "ops@user",
+            "neither"
+        ],
+    );
+    assert_eq!(app.backend.effective_calls.borrow().as_slice(), ["both"]);
+
+    let path = app.backend.paths.config_file();
+    fs::write(path, "Host both\n  HostName changed.example.com\n").unwrap();
+    *app.backend.loaded.borrow_mut() = Ok(load(&app.backend.paths).unwrap());
+    assert_eq!(
+        app.filtered_hosts().next().unwrap().summary,
+        "deploy@first.example.com"
+    );
+    ch(&mut app, 'r');
+    assert_eq!(
+        app.filtered_hosts().next().unwrap().summary,
+        "changed.example.com"
+    );
+}
+
+#[test]
+fn selected_command_uses_the_loaded_prefix_and_current_selection() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    let root = app.backend.paths.config_file();
+    key(&mut app, KeyCode::Down);
+    fs::remove_file(&root).unwrap();
+    assert_eq!(
+        app.selected_command(),
+        Some(preview(&["-F".into(), root.into_os_string(), "db".into()]))
+    );
+    ch(&mut app, '/');
+    app.handle_paste("no match");
+    assert_eq!(app.selected_command(), None);
+}
+
+#[test]
+fn form_first_error_is_in_field_order_and_works_behind_the_picker() {
+    let mut app = App::new(FakeBackend::new("").with_keys());
+    set_field(&mut app, FormField::Port, "70000");
+    assert_eq!(
+        app.form_first_error(),
+        Some((
+            FormField::Address,
+            ValidationError::Empty {
+                field: Field::Address
+            }
+        ))
+    );
+    set_field(&mut app, FormField::Address, "203.0.113.12");
+    key(&mut app, KeyCode::F(2));
+    assert_eq!(
+        app.form_first_error(),
+        Some((FormField::Port, ValidationError::InvalidPort))
+    );
+    key(&mut app, KeyCode::Esc);
+    set_field(&mut app, FormField::Port, "22");
+    assert_eq!(app.form_first_error(), None);
+}

@@ -17,7 +17,7 @@ use crossterm::terminal::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::app::{App, Backend, ClickTarget, Exit};
-use crate::ui::{self, HitMap};
+use crate::ui::{self, ColorMode, HitMap, Theme};
 
 // The terminal and panic hook both belong to the process.
 static TERMINAL_SESSION: Mutex<()> = Mutex::new(());
@@ -27,6 +27,8 @@ static TERMINAL_SESSION: Mutex<()> = Mutex::new(());
 pub struct Options {
     /// Capture mouse events for the TUI.
     pub mouse: bool,
+    /// Palette to use for the terminal.
+    pub color: ColorMode,
 }
 
 /// Detects double clicks using caller-supplied times.
@@ -94,13 +96,14 @@ fn run_loop<B: Backend>(mut app: App<B>, options: Options) -> io::Result<Exit> {
     }
     terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     let mut clicks = ClickTracker::default();
+    let theme = Theme::new(options.color);
 
     let exit = loop {
         if let Some(exit) = app.exit() {
             break exit.clone();
         }
         let mut hits = HitMap::default();
-        terminal.draw(|frame| hits = ui::render(frame, &app))?;
+        terminal.draw(|frame| hits = ui::render(frame, &app, &theme))?;
         loop {
             let mouse = options.mouse.then_some((&hits, &mut clicks));
             if handle_event(&mut app, event::read()?, mouse, Instant::now()) {
@@ -198,7 +201,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
     use ratatui::backend::TestBackend;
 
-    const SECOND_HOST: (u16, u16) = (12, 3);
+    const SECOND_HOST: (u16, u16) = (12, 5);
     const LEFT_DOWN: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
     const LEFT_UP: MouseEventKind = MouseEventKind::Up(MouseButton::Left);
 
@@ -206,7 +209,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|frame| hits = ui::render(frame, app))
+            .draw(|frame| hits = ui::render(frame, app, &Theme::new(ColorMode::TrueColor)))
             .unwrap();
         hits
     }
@@ -393,12 +396,14 @@ mod tests {
     #[test]
     fn releasing_off_the_pressed_button_clears_the_press_without_acting() {
         let mut app = App::new(FakeBackend::new(""));
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         let hits = rendered_hits(&app, 24);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         let button = (0..24)
             .flat_map(|row| (0..80).map(move |column| (column, row)))
             .find(|&(column, row)| hits.hit(column, row) == Some(&ClickTarget::Key(KeyCode::F(2))))
             .unwrap();
-        let field = (12, 4);
+        let field = (12, 8);
         assert!(matches!(
             hits.hit(field.0, field.1),
             Some(ClickTarget::FormField {

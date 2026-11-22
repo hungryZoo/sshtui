@@ -6,6 +6,7 @@ use sshtui::app::{App, Exit};
 use sshtui::paths::SshPaths;
 use sshtui::ssh::exec::{find_ssh, run_interactive};
 use sshtui::system::SystemBackend;
+use sshtui::ui::ColorMode;
 use sshtui::update::{self, CURRENT_VERSION, CheckOutcome, InstallMethod, UpdatePlan};
 use sshtui::{dialog, tui};
 
@@ -120,6 +121,17 @@ fn mouse_enabled(value: Option<&OsStr>) -> bool {
     value.is_none_or(|value| value.is_empty() || value == "0")
 }
 
+fn color_mode(colorterm: Option<&OsStr>) -> ColorMode {
+    match colorterm.and_then(OsStr::to_str) {
+        Some(value)
+            if value.eq_ignore_ascii_case("truecolor") || value.eq_ignore_ascii_case("24bit") =>
+        {
+            ColorMode::TrueColor
+        }
+        _ => ColorMode::Ansi,
+    }
+}
+
 fn run() -> anyhow::Result<ExitCode> {
     let paths = SshPaths::from_env()?;
     let ssh = find_ssh()?;
@@ -133,6 +145,7 @@ fn run() -> anyhow::Result<ExitCode> {
         SystemBackend::new(paths, ssh.clone(), dialog::system_picker()).with_update_plan(plan);
     let options = tui::Options {
         mouse: mouse_enabled(std::env::var_os("SSHTUI_NO_MOUSE").as_deref()),
+        color: color_mode(std::env::var_os("COLORTERM").as_deref()),
     };
     match tui::run(App::new(backend), options)? {
         Exit::Quit => Ok(ExitCode::SUCCESS),
@@ -147,6 +160,18 @@ fn run() -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::{CliAction, OsStr, mouse_enabled, parse_args};
+
+    #[test]
+    fn chooses_true_color_only_for_supported_colorterm_values() {
+        use super::{ColorMode, color_mode};
+
+        for value in ["truecolor", "24bit", "TrueColor", "24BIT"] {
+            assert_eq!(color_mode(Some(OsStr::new(value))), ColorMode::TrueColor);
+        }
+        for value in [None, Some(""), Some("256color")] {
+            assert_eq!(color_mode(value.map(OsStr::new)), ColorMode::Ansi);
+        }
+    }
 
     #[test]
     fn mouse_is_enabled_unless_the_environment_value_is_nonempty_and_nonzero() {

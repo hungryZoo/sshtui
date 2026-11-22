@@ -2,59 +2,88 @@ use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Clear;
+use ratatui::widgets::{Block, BorderType, Clear};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{ClickTarget, ConfirmState, KeyPickerState, NoticeState, UpdateState};
-use crate::config::{DiffHunk, DiffLine, DiffTag};
+use crate::config::{DiffHunk, DiffLine, DiffTag, backup_file_name};
 use crate::paths::SshPaths;
 
-use super::buttons::{ButtonKind, render_buttons};
 use super::layout::{
-    below, draw_panel, has_border, inset_horizontal, panel_title, render_lines, row, visible_rows,
+    below, header_line, inset, left, put, put_right, render_lines, right_of, row, rule,
+    visible_rows,
 };
-use super::{HitMap, labeled_lines, styled_wrapped, theme, wrapped_lines};
+use super::theme::bold;
+use super::{HitMap, KeyHint, Theme, command_lines, labeled_lines, styled_wrapped};
 
-/// Draws the file and diff for a pending change.
+pub(super) fn confirm_help(state: &ConfirmState) -> &'static [KeyHint] {
+    if state.is_delete() {
+        &[
+            ("y", "delete", Some(KeyCode::Char('y'))),
+            ("n", "back to list", Some(KeyCode::Char('n'))),
+            ("↑↓", "scroll", None),
+        ]
+    } else {
+        &[
+            ("y", "save", Some(KeyCode::Char('y'))),
+            ("n", "back to form", Some(KeyCode::Char('n'))),
+            ("↑↓", "scroll", None),
+        ]
+    }
+}
+
 pub(super) fn confirm(
     frame: &mut Frame,
     state: &ConfirmState,
     paths: &SshPaths,
-    area: Rect,
-    hits: &mut HitMap,
+    body: Rect,
+    theme: &Theme,
 ) {
-    if area.is_empty() {
-        return;
+    rule(frame, row(body, 0), theme.rule);
+    let mut added = 0;
+    let mut removed = 0;
+    for change in state.hunks().iter().flat_map(|hunk| &hunk.lines) {
+        match change.tag {
+            DiffTag::Added => added += 1,
+            DiffTag::Removed => removed += 1,
+            DiffTag::Context => {}
+        }
     }
-    let area = draw_panel(frame, area, Some(panel_title(&state.title())), true);
-    let area = inset_horizontal(area);
-    let (content, buttons) = split_footer(area);
-    render_buttons(
-        frame,
-        buttons,
-        &[
-            ("Confirm y", ButtonKind::Primary, KeyCode::Char('y')),
-            ("Cancel n", ButtonKind::Secondary, KeyCode::Char('n')),
-        ],
-        hits,
-    );
-    let path = paths.abbreviate_home(state.path());
-    let path_lines = styled_wrapped(&path, content.width, content.height.min(2), theme::MUTED);
-    let diff = below(render_lines(frame, content, path_lines), 1);
-    render_diff(frame, state.hunks(), state.scroll(), diff);
+    let count = added.max(removed);
+    let mut summary = Line::from(Span::styled(
+        if count == 1 {
+            "1 line will change".into()
+        } else {
+            format!("{count} lines will change")
+        },
+        theme.text,
+    ));
+    if removed > 0 {
+        summary.push_span(Span::styled(format!("  -{removed}"), theme.error));
+    }
+    if added > 0 {
+        summary.push_span(Span::styled(format!("  +{added}"), theme.ok));
+    }
+    frame.render_widget(summary, row(body, 1));
+    let mut diff = below(body, if body.height >= 4 { 3 } else { 2 });
+    if state.has_original_file()
+        && diff.height >= 2
+        && let Some(file_name) = state.path().file_name()
+    {
+        diff.height = diff.height.saturating_sub(1);
+        let backup = state.path().with_file_name(backup_file_name(file_name));
+        let backup = paths.abbreviate_home(&backup);
+        put(
+            frame,
+            row(body, body.height.saturating_sub(1)),
+            &format!("The current file is kept as {backup}"),
+            theme.muted,
+        );
+    }
+    render_diff(frame, state.hunks(), state.scroll(), diff, theme);
 }
 
-fn render_diff(frame: &mut Frame, hunks: &[DiffHunk], mut skip: usize, area: Rect) {
-    if area.is_empty() {
-        return;
-    }
-    let number_width = hunks
-        .iter()
-        .flat_map(|hunk| &hunk.lines)
-        .flat_map(|line| [line.old_line, line.new_line])
-        .flatten()
-        .max()
-        .map_or(4, |number| number.to_string().len().max(4));
-
+fn render_diff(frame: &mut Frame, hunks: &[DiffHunk], mut skip: usize, area: Rect, theme: &Theme) {
     let mut rows = area.rows();
     let mut shown_hunk = false;
     for hunk in hunks {
@@ -63,98 +92,179 @@ fn render_diff(frame: &mut Frame, hunks: &[DiffHunk], mut skip: usize, area: Rec
             continue;
         }
         if shown_hunk {
-            let Some(row) = rows.next() else { return };
-            frame.render_widget(
-                Span::styled("─".repeat(usize::from(row.width)), theme::MUTED),
-                row,
-            );
+            let Some(rect) = rows.next() else { return };
+            put(frame, rect, "⋯", theme.muted);
         }
-        for change in hunk.lines.iter().skip(skip) {
-            let Some(row) = rows.next() else { return };
-            frame.render_widget(diff_line(change, number_width), row);
+        for change in review_lines(hunk).skip(skip) {
+            let Some(rect) = rows.next() else { return };
+            diff_line(frame, rect, change, theme);
         }
         skip = 0;
         shown_hunk = true;
     }
 }
 
-fn diff_line(change: &DiffLine, width: usize) -> Line<'static> {
-    let old = change
-        .old_line
-        .map(|number| number.to_string())
-        .unwrap_or_default();
-    let new = change
-        .new_line
-        .map(|number| number.to_string())
-        .unwrap_or_default();
-    let (marker, style) = match change.tag {
-        DiffTag::Context => (' ', theme::PLAIN),
-        DiffTag::Removed => ('-', theme::ERROR),
-        DiffTag::Added => ('+', theme::SUCCESS),
-    };
-    Line::from(vec![
-        Span::styled(format!("{old:>width$} {new:>width$} "), theme::MUTED),
-        Span::styled(format!("{marker} {}", change.text), style),
-    ])
+fn review_lines(hunk: &DiffHunk) -> impl Iterator<Item = &DiffLine> {
+    hunk.lines
+        .chunk_by(|left, right| (left.tag == DiffTag::Context) == (right.tag == DiffTag::Context))
+        .flat_map(|group| {
+            // Pair adjacent removals and additions in the preview while preserving file order.
+            let mut old = group.iter().filter(|line| line.tag != DiffTag::Added);
+            let mut new = group.iter().filter(|line| line.tag == DiffTag::Added);
+            std::iter::from_fn(move || {
+                let pair = [old.next(), new.next()];
+                pair.iter().any(Option::is_some).then_some(pair)
+            })
+            .flatten()
+            .flatten()
+        })
 }
 
-/// Draws the available keys over the form.
-pub(super) fn key_picker(frame: &mut Frame, state: &KeyPickerState, body: Rect, hits: &mut HitMap) {
-    let keys = state.keys();
-    let bounds = popup_bounds(body, 74, keys.len());
-    let area = draw_popup(frame, bounds, "Select a key file", hits);
+fn diff_line(frame: &mut Frame, area: Rect, change: &DiffLine, theme: &Theme) {
+    let (marker, style) = match change.tag {
+        DiffTag::Context => ("", theme.muted),
+        DiffTag::Removed => ("-", theme.removed),
+        DiffTag::Added => ("+", theme.added),
+    };
+    frame.buffer_mut().set_style(area, style);
+    for (offset, number) in [(0, change.old_line), (5, change.new_line)] {
+        if let Some(number) = number {
+            let col = left(right_of(area, offset), 5);
+            put_right(frame, col, &number.to_string(), style);
+        }
+    }
+    put(frame, left(right_of(area, 12), 1), marker, bold(style));
+    let text = change.text.replace('\t', "    ");
+    put(frame, right_of(area, 14), &text, style);
+}
+
+pub(super) fn key_picker(
+    frame: &mut Frame,
+    state: &KeyPickerState,
+    paths: &SshPaths,
+    body: Rect,
+    theme: &Theme,
+    hits: &mut HitMap,
+) -> &'static [KeyHint] {
+    let count = state.keys().len();
+    let directory = paths.abbreviate_home(paths.ssh_dir());
+    let count_text = if count == 1 {
+        format!("1 key in {directory}")
+    } else {
+        format!("{count} keys in {directory}")
+    };
+    let area = popup(frame, body, count.saturating_add(2), theme, hits);
+    popup_heading(frame, area, "Select a key file", &count_text, theme);
     let selection = state.selection();
-    for (index, rect) in visible_rows(area, keys.len(), Some(selection)) {
-        frame.render_widget(Span::raw(keys[index].label()), rect);
-        if index == selection {
-            frame.buffer_mut().set_style(rect, theme::SELECTED);
+    for (index, rect) in visible_rows(below(area, 2), count, Some(selection)) {
+        let key = &state.keys()[index];
+        let selected = index == selection;
+        if selected {
+            frame.buffer_mut().set_style(rect, theme.row);
+            put(
+                frame,
+                left(rect, 1),
+                "›",
+                theme.selected(bold(theme.accent), true),
+            );
+        }
+        let content = right_of(rect, 2);
+        let path = paths.abbreviate_home(&key.path);
+        let style = if selected {
+            bold(theme.text)
+        } else {
+            theme.text
+        };
+        put(frame, content, &path, theme.selected(style, selected));
+        if let Some(public) = &key.public {
+            let metadata = match &public.comment {
+                Some(comment) if !comment.is_empty() => format!("{} {comment}", public.key_type),
+                _ => public.key_type.clone(),
+            };
+            let path_width = u16::try_from(path.width()).unwrap_or(u16::MAX);
+            let metadata_area = right_of(content, path_width.saturating_add(1));
+            let metadata = super::layout::clip_cells(&metadata, metadata_area.width);
+            put_right(
+                frame,
+                metadata_area,
+                &metadata,
+                theme.selected(theme.muted, selected),
+            );
         }
         hits.add(rect, ClickTarget::KeyRow(index));
     }
+    &[
+        ("enter", "use this key", Some(KeyCode::Enter)),
+        ("↑↓", "select", None),
+        ("esc", "cancel", Some(KeyCode::Esc)),
+    ]
 }
 
-/// Draws the acknowledgment message and its actions.
-pub(super) fn notice(frame: &mut Frame, state: &NoticeState, body: Rect, hits: &mut HitMap) {
-    const MAX_WIDTH: u16 = 104;
-    let width = popup_content_width(body, MAX_WIDTH);
-    let lines = styled_wrapped(
-        &state.lines().join("\n"),
-        width,
-        body.height,
-        theme::WARNING,
-    );
-    let bounds = popup_bounds(body, MAX_WIDTH, lines.len().saturating_add(1));
-    let area = draw_popup(frame, bounds, state.title(), hits);
-    let (content, footer) = split_footer(area);
-    render_lines(frame, content, lines);
-    let buttons: &[_] = if state.connects() {
+pub(super) fn notice(
+    frame: &mut Frame,
+    state: &NoticeState,
+    body: Rect,
+    theme: &Theme,
+    hits: &mut HitMap,
+) -> &'static [KeyHint] {
+    let width = popup_content_width(body);
+    let lines = styled_wrapped(&state.lines().join("\n"), width, body.height, theme.warn);
+    let area = popup(frame, body, lines.len().saturating_add(2), theme, hits);
+    popup_heading(frame, area, state.title(), "", theme);
+    render_lines(frame, below(area, 2), lines);
+    if state.connects() {
         &[
-            ("Connect anyway", ButtonKind::Primary, KeyCode::Enter),
-            ("Back", ButtonKind::Secondary, KeyCode::Esc),
+            ("enter", "connect anyway", Some(KeyCode::Enter)),
+            ("esc", "back to list", Some(KeyCode::Esc)),
         ]
     } else {
-        &[("OK", ButtonKind::Primary, KeyCode::Enter)]
-    };
-    render_buttons(frame, footer, buttons, hits);
+        &[("enter", "ok", Some(KeyCode::Enter))]
+    }
 }
 
-/// Draws update details and the available actions.
-pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect, hits: &mut HitMap) {
-    const MAX_WIDTH: u16 = 104;
-    let width = popup_content_width(body, MAX_WIDTH);
+pub(super) fn update(
+    frame: &mut Frame,
+    state: &UpdateState,
+    body: Rect,
+    theme: &Theme,
+    hits: &mut HitMap,
+) -> &'static [KeyHint] {
+    let width = popup_content_width(body);
     let label_width = 15.min(width.saturating_sub(1));
-    let mut lines = Vec::new();
-    for (label, value) in [
-        ("Current", state.current()),
-        ("Latest", state.latest()),
-        ("Installed via", &state.method_description()),
-    ] {
-        lines.extend(labeled_lines(label, value, width, label_width, body.height));
-    }
+    let mut lines = labeled_lines(
+        "Installed via",
+        &state.method_description(),
+        width,
+        label_width,
+        body.height,
+        theme,
+    );
     if state.can_run() {
-        lines.push(Line::from(Span::styled("Command", theme::MUTED)));
-        for step in state.display_steps() {
-            lines.extend(wrapped_lines(&step, width, body.height));
+        for (step, command) in state.display_steps().iter().enumerate() {
+            let command = command_lines(
+                command,
+                width.saturating_sub(label_width),
+                body.height,
+                theme,
+            );
+            for (index, mut line) in command.into_iter().enumerate() {
+                let label = if step == 0 && index == 0 {
+                    "Command"
+                } else {
+                    ""
+                };
+                line.spans.insert(
+                    0,
+                    Span::styled(
+                        format!(
+                            "{label:<label_width$}",
+                            label_width = usize::from(label_width)
+                        ),
+                        theme.muted,
+                    ),
+                );
+                lines.push(line);
+            }
         }
     } else {
         lines.extend(labeled_lines(
@@ -163,77 +273,73 @@ pub(super) fn update(frame: &mut Frame, state: &UpdateState, body: Rect, hits: &
             width,
             label_width,
             body.height,
+            theme,
         ));
     }
-
-    let bounds = popup_bounds(body, MAX_WIDTH, lines.len().saturating_add(1));
-    let area = draw_popup(
-        frame,
-        bounds,
-        concat!("Update ", env!("CARGO_PKG_NAME")),
-        hits,
-    );
-    let (content, footer) = split_footer(area);
-    render_lines(frame, content, lines);
-    let buttons: &[_] = if state.can_run() {
+    let area = popup(frame, body, lines.len().saturating_add(2), theme, hits);
+    let versions = format!("{} → {}", state.current(), state.latest());
+    popup_heading(frame, area, "Update sshtui", &versions, theme);
+    render_lines(frame, below(area, 2), lines);
+    if state.can_run() {
         &[
-            ("Update and exit", ButtonKind::Primary, KeyCode::Enter),
-            ("Cancel", ButtonKind::Secondary, KeyCode::Esc),
+            ("enter", "update and exit", Some(KeyCode::Enter)),
+            ("esc", "cancel", Some(KeyCode::Esc)),
         ]
     } else {
-        &[("Close", ButtonKind::Primary, KeyCode::Esc)]
-    };
-    render_buttons(frame, footer, buttons, hits);
-}
-
-fn split_footer(area: Rect) -> (Rect, Rect) {
-    let content_height = if area.height >= 2 {
-        area.height.saturating_sub(1)
-    } else {
-        area.height
-    };
-    (
-        Rect {
-            height: content_height,
-            ..area
-        },
-        row(area, content_height),
-    )
-}
-
-fn draw_popup(frame: &mut Frame, area: Rect, title: &str, hits: &mut HitMap) -> Rect {
-    hits.add(frame.area(), ClickTarget::Outside);
-    hits.add(area, ClickTarget::Inert);
-    frame.render_widget(Clear, area);
-    let title = Line::from(Span::styled(format!(" {title} "), theme::BOLD));
-    if has_border(area) {
-        draw_panel(frame, area, Some(title), true)
-    } else if area.height >= 2 {
-        frame.render_widget(title, row(area, 0));
-        below(area, 1)
-    } else {
-        area
+        &[("esc", "close", Some(KeyCode::Esc))]
     }
 }
 
-fn popup_content_width(body: Rect, max_width: u16) -> u16 {
-    let bounds = popup_bounds(body, max_width, 1);
-    if has_border(bounds) {
-        bounds.width.saturating_sub(2)
+fn popup_width(body: Rect) -> u16 {
+    if body.width >= 60 {
+        60
     } else {
-        bounds.width
+        body.width.saturating_sub(4)
     }
 }
 
-fn popup_bounds(body: Rect, max_width: u16, content_rows: usize) -> Rect {
-    let width = body.width.saturating_sub(body.width / 8).min(max_width);
-    let desired_height = u16::try_from(content_rows.saturating_add(2)).unwrap_or(u16::MAX);
-    let height = body.height.min(desired_height);
-    Rect::new(
-        body.x.saturating_add(body.width.saturating_sub(width) / 2),
-        body.y
-            .saturating_add(body.height.saturating_sub(height) / 2),
+fn popup_content_width(body: Rect) -> u16 {
+    let width = popup_width(body);
+    width.saturating_sub(if width >= 7 { 6 } else { 2 })
+}
+
+fn popup(frame: &mut Frame, body: Rect, rows: usize, theme: &Theme, hits: &mut HitMap) -> Rect {
+    let width = popup_width(body);
+    let height = u16::try_from(rows.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .min(body.height);
+    let remaining = body.height.saturating_sub(height);
+    let top = if remaining >= 6 { 6 } else { remaining / 2 };
+    let area = Rect::new(
+        body.x + body.width.saturating_sub(width) / 2,
+        body.y + top,
         width,
         height,
-    )
+    );
+    hits.add(frame.area(), ClickTarget::Outside);
+    hits.add(area, ClickTarget::Inert);
+    if area.is_empty() {
+        return area;
+    }
+    frame.render_widget(Clear, area);
+    frame.buffer_mut().set_style(area, theme.base);
+    if area.width < 3 || area.height < 3 {
+        return area;
+    }
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(theme.text);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    inset(inner, if area.width >= 7 { 2 } else { 0 }, 0)
+}
+
+fn popup_heading(frame: &mut Frame, area: Rect, title: &str, right: &str, theme: &Theme) {
+    header_line(
+        frame,
+        row(area, 0),
+        Line::from(Span::styled(title, bold(theme.text))),
+        right,
+        theme.muted,
+    );
 }

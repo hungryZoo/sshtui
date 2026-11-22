@@ -6,188 +6,354 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, ClickTarget, HostRow};
 
-use super::layout::{
-    below, draw_panel, inset_horizontal, left, panel_title, render_lines, right_of, row,
-    visible_rows,
+use super::layout::{below, left, put, render_lines, right_of, row, rule, visible_rows};
+use super::theme::{PLAIN, bold};
+use super::{
+    HitMap, KeyHints, Theme, command_lines, headline, input_window, labeled_lines, styled_wrapped,
 };
-use super::{HitMap, KeyHint, input_window, labeled_lines, styled_wrapped, theme};
 
-/// Returns the list key hints for this session.
-pub(super) fn help<B: Backend>(app: &App<B>) -> impl Iterator<Item = KeyHint> {
-    [
-        ("Enter", "connect", Some(KeyCode::Enter)),
-        ("n", "new", Some(KeyCode::Char('n'))),
-        ("e", "edit", Some(KeyCode::Char('e'))),
-        ("d", "delete", Some(KeyCode::Char('d'))),
-        ("/", "filter", Some(KeyCode::Char('/'))),
-        ("r", "reload", Some(KeyCode::Char('r'))),
-    ]
-    .into_iter()
-    .chain(
-        app.update_plan()
-            .map(|_| ("u", "update", Some(KeyCode::Char('u')))),
-    )
-    .chain([("q", "quit", Some(KeyCode::Char('q')))])
-}
-
-/// Returns the counts displayed in the list header.
-pub(super) fn title<B: Backend>(app: &App<B>) -> String {
-    let total = app.host_count();
-    if app.is_filtering() || !app.filter().value().is_empty() {
-        format!("{} of {total} hosts", app.filtered_hosts().len())
+pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
+    if app.is_filtering() {
+        (
+            true,
+            &[
+                ("enter", "apply filter", Some(KeyCode::Enter)),
+                ("↑↓", "select", None),
+                ("esc", "clear filter", Some(KeyCode::Esc)),
+            ],
+        )
     } else {
-        format!("{total} hosts")
+        (
+            app.selection().is_some(),
+            &[
+                ("enter", "connect", Some(KeyCode::Enter)),
+                ("n", "new", Some(KeyCode::Char('n'))),
+                ("e", "edit", Some(KeyCode::Char('e'))),
+                ("d", "delete", Some(KeyCode::Char('d'))),
+                ("/", "filter", Some(KeyCode::Char('/'))),
+                ("r", "reload", Some(KeyCode::Char('r'))),
+                ("q", "quit", Some(KeyCode::Char('q'))),
+            ],
+        )
     }
 }
 
-/// Draws the host list and the details of the selected host.
+pub(super) fn header<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    area: Rect,
+    theme: &Theme,
+    hits: &mut HitMap,
+) {
+    let total = app.host_count();
+    let title = if app.is_filtering() || !app.filter().value().is_empty() {
+        format!("{} of {total} hosts", app.filtered_hosts().len())
+    } else {
+        format!("{total} hosts")
+    };
+    let line = headline(title, theme.muted, theme);
+    if app.update_plan().is_some() {
+        let notice = Line::from(vec![
+            Span::styled("update available ", theme.warn),
+            Span::styled("u", bold(theme.warn)),
+        ]);
+        let width = notice.width() as u16;
+        let offset = area.width.saturating_sub(width);
+        if usize::from(offset) >= line.width() + 2 {
+            let notice_area = right_of(area, offset);
+            frame.render_widget(notice, notice_area);
+            hits.add(notice_area, ClickTarget::UpdateNotice);
+        }
+    }
+    frame.render_widget(line, area);
+}
+
 pub(super) fn render<B: Backend>(
     frame: &mut Frame,
     app: &App<B>,
     body: Rect,
-    show_cursor: bool,
+    theme: &Theme,
     hits: &mut HitMap,
 ) {
-    if body.is_empty() {
+    // A compact screen drops the empty row and rule before it loses the list.
+    let filter_row = u16::from(body.height >= 4);
+    let show_rule = body.height >= 4;
+    render_filter(frame, app, row(body, filter_row), theme, hits);
+    if show_rule {
+        rule(frame, row(body, 2), theme.rule);
+    }
+
+    let content = below(body, filter_row + 1 + u16::from(show_rule));
+    let split = frame.area().width >= 64;
+    let width = if split {
+        ((u32::from(content.width) * 54 + 50) / 100).min(52) as u16
+    } else {
+        content.width
+    };
+    render_hosts(frame, app, left(content, width), theme, hits);
+    if split {
+        let divider = left(right_of(content, width), 1);
+        for rect in divider.rows() {
+            put(frame, rect, "│", theme.rule);
+        }
+        if let Some(host) = app
+            .selection()
+            .and_then(|index| app.filtered_hosts().nth(index))
+        {
+            render_detail(frame, app, host, right_of(content, width + 3), theme);
+        }
+    }
+}
+
+fn render_filter<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    area: Rect,
+    theme: &Theme,
+    hits: &mut HitMap,
+) {
+    if area.is_empty() {
         return;
     }
-    let names_width = if body.width < 50 {
-        body.width
-    } else {
-        let longest = app
-            .filtered_hosts()
-            .map(|host| host.entry.name.width() + if host.read_only { 6 } else { 4 })
-            .max()
-            .unwrap_or(0);
-        (longest.clamp(24, 40) as u16).min(body.width / 2)
-    };
-    let selection = app.selection();
-    let names = draw_panel(
+    let filtering = app.is_filtering();
+    frame.buffer_mut().set_style(area, theme.input(filtering));
+    put(
         frame,
-        left(body, names_width),
-        Some(panel_title("Hosts")),
-        true,
+        left(right_of(area, 1), 1),
+        "/",
+        if filtering {
+            bold(theme.accent)
+        } else {
+            theme.muted
+        },
     );
-    render_hosts(frame, app, names, show_cursor, hits);
-
-    let detail = right_of(body, names_width);
-    if !detail.is_empty() {
-        let host = selection.and_then(|index| app.filtered_hosts().nth(index));
-        let title = host.map(|host| panel_title(&host.entry.name));
-        let detail = draw_panel(frame, detail, title, false);
-        if let Some(host) = host {
-            render_detail(frame, app, host, inset_horizontal(detail));
-        }
+    let input = right_of(area, 3);
+    let (value, column, _) = input_window(app.filter(), input.width, filtering);
+    if !filtering && value.is_empty() {
+        put(frame, input, "filter hosts", theme.muted);
+    } else {
+        put(frame, input, value, theme.text);
+    }
+    if filtering && !theme.dim && !input.is_empty() {
+        frame.set_cursor_position((input.x.saturating_add(column), input.y));
+    }
+    if !filtering {
+        hits.add(area, ClickTarget::Key(KeyCode::Char('/')));
     }
 }
 
 fn render_hosts<B: Backend>(
     frame: &mut Frame,
     app: &App<B>,
-    mut area: Rect,
-    show_cursor: bool,
+    area: Rect,
+    theme: &Theme,
     hits: &mut HitMap,
 ) {
-    let filter = app.filter();
-    if area.is_empty() {
-        return;
-    }
-    if app.is_filtering() || !filter.value().is_empty() {
-        let (value, column, _) =
-            input_window(filter, area.width.saturating_sub(1), app.is_filtering());
-        frame.render_widget(
-            Line::from(vec![Span::styled("/", theme::ACCENT), Span::raw(value)]),
-            row(area, 0),
-        );
-        if show_cursor && app.is_filtering() {
-            let column = column.saturating_add(1).min(area.width.saturating_sub(1));
-            frame.set_cursor_position((area.x.saturating_add(column), area.y));
-        }
-        area = below(area, 1);
-    }
-    if area.is_empty() {
-        return;
-    }
     let hosts = app.filtered_hosts();
-    let count = hosts.len();
-    if count == 0 {
-        let line = Line::from(Span::styled("No matching hosts", theme::MUTED)).centered();
-        frame.render_widget(line, row(area, area.height.saturating_sub(1) / 2));
+    if hosts.len() == 0 {
+        put(frame, row(area, 0), "No matching hosts", theme.muted);
         return;
     }
+    let name_width = app
+        .filtered_hosts()
+        .map(|host| host.entry.name.width().saturating_add(2))
+        .max()
+        .unwrap_or(0)
+        .clamp(16, 28) as u16;
     let selection = app.selection();
-    let rows = visible_rows(area, count, selection);
-    let mut rows = rows.peekable();
-    if let Some(&(first, _)) = rows.peek() {
-        for ((index, area), host) in rows.zip(hosts.skip(first)) {
-            render_host(frame, area, host, selection == Some(index));
-            hits.add(area, ClickTarget::HostRow(index));
-        }
+    let mut rows = visible_rows(area, hosts.len(), selection).peekable();
+    let Some(&(first, _)) = rows.peek() else {
+        return;
+    };
+    let filter = app.filter().value().to_lowercase();
+    for ((index, rect), host) in rows.zip(hosts.skip(first)) {
+        render_host(
+            frame,
+            rect,
+            host,
+            selection == Some(index),
+            name_width,
+            &filter,
+            theme,
+        );
+        hits.add(rect, ClickTarget::HostRow(index));
     }
 }
 
-fn render_host(frame: &mut Frame, area: Rect, host: HostRow<'_>, selected: bool) {
-    let marker_width = if host.read_only && area.width >= 4 {
-        2
+fn render_host(
+    frame: &mut Frame,
+    area: Rect,
+    host: HostRow<'_>,
+    selected: bool,
+    name_width: u16,
+    filter: &str,
+    theme: &Theme,
+) {
+    if selected {
+        frame.buffer_mut().set_style(area, theme.row);
+        put(
+            frame,
+            left(area, 1),
+            "›",
+            theme.selected(bold(theme.accent), true),
+        );
+    }
+    let content = right_of(left(area, area.width.saturating_sub(1)), 2);
+    let names = left(content, name_width);
+    let summary = right_of(content, name_width);
+    let readonly = "read-only";
+    let width = readonly.len() as u16;
+    let marker_width = if host.read_only && summary.width >= width {
+        width
     } else {
         0
     };
-    let gap = u16::from(marker_width > 0);
-    let indent = u16::from(area.width > 1);
-    let name = left(
-        right_of(area, indent),
-        area.width.saturating_sub(indent + gap + marker_width),
+
+    let regular = theme.selected(
+        if selected {
+            bold(theme.text)
+        } else {
+            theme.text
+        },
+        selected,
     );
-    frame.render_widget(Span::raw(host.entry.name.as_str()), name);
-    if selected {
-        frame.buffer_mut().set_style(area, theme::SELECTED);
-    }
+    let name = host.entry.name.as_str();
+    let line = match match_range(name, filter) {
+        Some((start, end)) => Line::from(vec![
+            Span::styled(&name[..start], regular),
+            Span::styled(
+                &name[start..end],
+                theme.selected(bold(theme.accent), selected),
+            ),
+            Span::styled(&name[end..], regular),
+        ]),
+        None => Line::from(Span::styled(name, regular)),
+    };
+    frame.render_widget(line, names);
+    let summary_width = summary.width.saturating_sub(marker_width);
+    put(
+        frame,
+        left(summary, summary_width),
+        host.summary,
+        theme.selected(if selected { theme.text } else { theme.muted }, selected),
+    );
     if marker_width > 0 {
-        frame.render_widget(
-            Span::styled("ro", theme::WARNING),
-            right_of(area, area.width.saturating_sub(marker_width)),
+        put(
+            frame,
+            right_of(summary, summary_width),
+            readonly,
+            theme.selected(theme.warn, selected),
         );
     }
 }
 
-fn render_detail<B: Backend>(frame: &mut Frame, app: &App<B>, host: HostRow<'_>, area: Rect) {
-    let mut lines = Vec::new();
+fn match_range(name: &str, filter: &str) -> Option<(usize, usize)> {
+    if filter.is_empty() {
+        return None;
+    }
+    let start = name.to_lowercase().find(filter)?;
+    let end = start + filter.len();
+    let mut offset = 0;
+    let mut first = None;
+    let mut source = 0;
+    for grapheme in Span::raw(name).styled_graphemes(PLAIN) {
+        let symbol = grapheme.symbol;
+        let index = source + name[source..].find(symbol)?;
+        source = index + symbol.len();
+        offset += symbol
+            .chars()
+            .flat_map(char::to_lowercase)
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if start < offset {
+            first.get_or_insert(index);
+        }
+        if end <= offset {
+            return Some((first?, source));
+        }
+    }
+    None
+}
+
+fn render_detail<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    host: HostRow<'_>,
+    area: Rect,
+    theme: &Theme,
+) {
+    if area.is_empty() {
+        return;
+    }
+    put(frame, row(area, 0), &host.entry.name, bold(theme.text));
+    let mut content = below(area, 3);
     match app.selected_effective() {
         Some(Ok(config)) => {
+            let address = config.host_name.as_deref().unwrap_or(&host.entry.name);
+            let destination = config
+                .user
+                .as_ref()
+                .map_or_else(|| address.to_owned(), |user| format!("{user}@{address}"));
+            put(frame, row(area, 1), &destination, theme.muted);
             for (label, value) in [
                 ("User", config.user.as_deref().unwrap_or("-")),
-                ("Address", config.host_name.as_deref().unwrap_or("-")),
+                ("Address", address),
                 ("Port", config.port.as_deref().unwrap_or("-")),
             ] {
-                lines.extend(labeled_lines(label, value, area.width, 10, area.height));
+                content = detail_value(frame, content, label, value, theme);
             }
             if config.identity_files.is_empty() {
-                lines.extend(labeled_lines("Key file", "-", area.width, 10, area.height));
+                content = detail_value(frame, content, "Key file", "-", theme);
             }
-            for (index, key) in config.identity_files.iter().enumerate() {
+            for (index, file) in config.identity_files.iter().enumerate() {
+                if content.is_empty() {
+                    break;
+                }
                 let label = if index == 0 { "Key file" } else { "" };
-                lines.extend(labeled_lines(label, key, area.width, 10, area.height));
+                let file = app
+                    .backend()
+                    .paths()
+                    .abbreviate_home(std::path::Path::new(file));
+                content = detail_value(frame, content, label, &file, theme);
             }
         }
-        Some(Err(error)) => lines.extend(styled_wrapped(
-            &format!("Effective settings: {error}"),
-            area.width,
-            area.height,
-            theme::ERROR,
-        )),
+        Some(Err(error)) => {
+            let lines = styled_wrapped(
+                &format!("Effective settings: {error}"),
+                content.width,
+                content.height,
+                theme.error,
+            );
+            content = render_lines(frame, content, lines);
+        }
         None => {}
     }
-    let source = app.backend().paths().abbreviate_home(&host.entry.source);
-    lines.push(Line::default());
-    lines.extend(labeled_lines(
-        "Source",
-        &format!("{source}:{}", host.entry.line_number),
-        area.width,
-        10,
-        area.height,
-    ));
+
+    let path = app.backend().paths().abbreviate_home(&host.entry.source);
+    let source = format!("{path}:{}", host.entry.line_number);
+    content = detail_value(frame, content, "Source", &source, theme);
     if host.read_only {
-        lines.push(Line::from(Span::styled("Read-only file", theme::WARNING)));
+        put(frame, row(content, 0), "Read-only file", theme.warn);
+        content = below(content, 1);
     }
-    render_lines(frame, area, lines);
+    if !app.is_filtering()
+        && !theme.dim
+        && let Some(command) = app.selected_command()
+    {
+        put(frame, row(content, 1), "enter runs", theme.muted);
+        let preview = below(content, 2);
+        render_lines(
+            frame,
+            preview,
+            command_lines(&command, preview.width, preview.height.min(3), theme),
+        );
+    }
+}
+
+fn detail_value(frame: &mut Frame, area: Rect, label: &str, value: &str, theme: &Theme) -> Rect {
+    render_lines(
+        frame,
+        area,
+        labeled_lines(label, value, area.width, 11, area.height, theme),
+    )
 }

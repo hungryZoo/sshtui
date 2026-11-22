@@ -47,6 +47,16 @@ impl ConfirmState {
         &self.pending.path
     }
 
+    /// Returns whether the confirmation will remove a host.
+    pub fn is_delete(&self) -> bool {
+        matches!(self.action, ConfirmAction::Delete)
+    }
+
+    /// Returns whether the pending write has a loaded file to back up.
+    pub fn has_original_file(&self) -> bool {
+        self.pending.original.is_some()
+    }
+
     /// Returns the diff to display before saving.
     pub fn hunks(&self) -> &[DiffHunk] {
         &self.pending.hunks

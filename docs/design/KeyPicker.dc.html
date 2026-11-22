@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sshtui key file picker</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="position: relative; width: 912px; height: 664px; box-sizing: border-box; padding: 20px 24px; background: #15171c; color: #8d94a0; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 15px; line-height: 24px; display: flex; flex-direction: column">
+<div style="display: flex; gap: 2ch; height: 24px"><span style="font-weight: 700">sshtui</span><span style="font-weight: 700">New connection</span></div>
+<div style="height: 24px; display: flex; align-items: center"><div style="flex: 1; height: 1px; background: #3a404b"></div></div>
+<div style="display: flex; flex-direction: column; gap: 24px; padding-top: 24px">
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 11ch">Nickname</span><span style="width: 36ch; box-sizing: border-box; background: #1b1e24; padding: 0 1ch">prod-web-3</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 11ch">User</span><span style="width: 36ch; box-sizing: border-box; background: #1b1e24; padding: 0 1ch">deploy</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 11ch">Address</span><span style="width: 36ch; box-sizing: border-box; background: #1b1e24; padding: 0 1ch">203.0.113.12</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 11ch">Port</span><span style="width: 36ch; height: 24px; box-sizing: border-box; background: #1b1e24"></span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch">›</span><span style="width: 11ch">Key file</span><span style="width: 36ch; height: 24px; box-sizing: border-box; background: #1b1e24"></span></div>
+</div>
+<div style="flex: 1"></div>
+<div style="height: 24px; display: flex; align-items: center"><div style="flex: 1; height: 1px; background: #3a404b"></div></div>
+<div style="display: flex; gap: 3ch; height: 24px">
+<div style="display: flex; gap: 1ch"><span style="background: #6fd3c1; color: #15171c; font-weight: 700; padding: 0 1ch">enter</span><span style="color: #d8dbe1">use this key</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700; color: #d8dbe1">↑↓</span><span>select</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700; color: #d8dbe1">esc</span><span>cancel</span></div>
+</div>
+<div style="position: absolute; left: 50%; top: 188px; transform: translateX(-50%); width: 60ch; box-sizing: border-box; background: #15171c; border: 1px solid #d8dbe1; padding: 12px 2ch; color: #d8dbe1; display: flex; flex-direction: column">
+<div style="display: flex; justify-content: space-between; height: 24px"><span style="font-weight: 700">Select a key file</span><span style="color: #8d94a0">4 keys in ~/.ssh</span></div>
+<div style="height: 24px"></div>
+<div style="display: flex; height: 24px; background: #262b34"><span style="width: 2ch; color: #6fd3c1; font-weight: 700">›</span><span style="font-weight: 700">~/.ssh/id_ed25519</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span>~/.ssh/id_rsa</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span>~/.ssh/work_ed25519</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span>~/.ssh/github_deploy</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":912,"height":664}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

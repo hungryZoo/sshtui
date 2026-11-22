@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sshtui host list</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 912px; height: 664px; box-sizing: border-box; padding: 20px 24px; background: #15171c; color: #d8dbe1; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 15px; line-height: 24px; display: flex; flex-direction: column">
+<div style="display: flex; justify-content: space-between; height: 24px">
+<div style="display: flex; gap: 2ch"><span style="font-weight: 700; color: #6fd3c1">sshtui</span><span style="color: #8d94a0">12 hosts</span></div>
+<div style="display: flex; gap: 1ch; color: #e6b566"><span>update available</span><span style="font-weight: 700">u</span></div>
+</div>
+<div style="height: 24px"></div>
+<div style="display: flex; gap: 1ch; height: 24px; background: #20242c; padding: 0 1ch"><span style="color: #8d94a0">/</span><span style="color: #8d94a0">filter hosts</span></div>
+<div style="height: 24px; display: flex; align-items: center"><div style="flex: 1; height: 1px; background: #3a404b"></div></div>
+<div style="display: flex; flex: 1; min-height: 0">
+<div style="width: 52ch; display: flex; flex-direction: column; padding-right: 1ch; box-sizing: border-box">
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">bastion</span><span style="color: #8d94a0">ops@bastion.example.com</span></div>
+<div style="display: flex; height: 24px; background: #262b34"><span style="width: 2ch; color: #6fd3c1; font-weight: 700">›</span><span style="width: 16ch; font-weight: 700">prod-web-1</span><span>deploy@203.0.113.10</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">prod-web-2</span><span style="color: #8d94a0">deploy@203.0.113.11</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">prod-db</span><span style="color: #8d94a0">postgres@203.0.113.20</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">staging</span><span style="color: #8d94a0">deploy@staging.example.com</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">ci-runner</span><span style="color: #8d94a0">ci@198.51.100.31</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">gpu-box</span><span style="color: #8d94a0">heonzoo@192.0.2.44</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">homelab-nas</span><span style="color: #8d94a0">admin@nas.home.arpa</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">pi</span><span style="color: #8d94a0">pi@192.0.2.7</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">router</span><span style="color: #8d94a0">root@192.0.2.1</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">backup</span><span style="color: #8d94a0; flex: 1">borg@backup.example.net</span><span style="color: #e6b566">read-only</span></div>
+<div style="display: flex; height: 24px"><span style="width: 2ch"></span><span style="width: 16ch">git-mirror</span><span style="color: #8d94a0; flex: 1">git@198.51.100.8</span><span style="color: #e6b566">read-only</span></div>
+</div>
+<div style="flex: 1; min-width: 0; border-left: 1px solid #3a404b; padding-left: 3ch; display: flex; flex-direction: column">
+<div style="height: 24px; font-weight: 700">prod-web-1</div>
+<div style="height: 24px; color: #8d94a0">deploy@203.0.113.10</div>
+<div style="height: 24px"></div>
+<div style="display: flex; height: 24px"><span style="width: 11ch; color: #8d94a0">User</span><span>deploy</span></div>
+<div style="display: flex; height: 24px"><span style="width: 11ch; color: #8d94a0">Address</span><span>203.0.113.10</span></div>
+<div style="display: flex; height: 24px"><span style="width: 11ch; color: #8d94a0">Port</span><span>22</span></div>
+<div style="display: flex; height: 24px"><span style="width: 11ch; color: #8d94a0">Key file</span><span>~/.ssh/id_ed25519</span></div>
+<div style="display: flex; height: 24px"><span style="width: 11ch; color: #8d94a0">Source</span><span>~/.ssh/config:14</span></div>
+<div style="height: 24px"></div>
+<div style="height: 24px; color: #8d94a0">enter runs</div>
+<div style="display: flex; gap: 1ch; height: 24px"><span style="color: #8d94a0">$</span><span style="color: #6fd3c1">ssh prod-web-1</span></div>
+</div>
+</div>
+<div style="height: 24px; display: flex; align-items: center"><div style="flex: 1; height: 1px; background: #3a404b"></div></div>
+<div style="display: flex; gap: 3ch; height: 24px">
+<div style="display: flex; gap: 1ch"><span style="background: #6fd3c1; color: #15171c; font-weight: 700; padding: 0 1ch">enter</span><span>connect</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">n</span><span style="color: #8d94a0">new</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">e</span><span style="color: #8d94a0">edit</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">d</span><span style="color: #8d94a0">delete</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">/</span><span style="color: #8d94a0">filter</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">r</span><span style="color: #8d94a0">reload</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">q</span><span style="color: #8d94a0">quit</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":912,"height":664}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

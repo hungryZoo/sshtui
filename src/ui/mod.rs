@@ -1,6 +1,5 @@
-//! Rendering with ratatui.
+//! Terminal screens and mouse hit testing.
 
-mod buttons;
 mod form;
 mod layout;
 mod list;
@@ -16,9 +15,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, ClickTarget, Mode, TextInput};
 
-use self::layout::{below, left, render_lines, right_of, row};
+pub use self::theme::{ColorMode, Theme};
+
+use self::layout::{below, header_line, inset, left, render_lines, right_of, row, rule};
+use self::theme::{PLAIN, bold};
 
 type KeyHint = (&'static str, &'static str, Option<KeyCode>);
+type KeyHints = (bool, &'static [KeyHint]);
 
 /// Clickable regions of the last rendered frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -44,155 +47,147 @@ impl HitMap {
 }
 
 /// Draws the screen and returns its clickable regions. No I/O.
-pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>) -> HitMap {
-    let area = frame.area();
+pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>, theme: &Theme) -> HitMap {
+    let screen = frame.area();
     let mut hits = HitMap::default();
-    if area.is_empty() {
+    if screen.is_empty() {
         return hits;
     }
+    let modal = matches!(
+        app.mode(),
+        Mode::KeyPicker(_) | Mode::Notice(_) | Mode::Update(_)
+    );
+    let backdrop = if modal { &theme.dimmed() } else { theme };
+    frame.buffer_mut().set_style(screen, backdrop.base);
+    let area = inset(
+        screen,
+        if screen.width >= 64 { 2 } else { 0 },
+        u16::from(screen.height >= 18),
+    );
+    let header = row(area, 0);
+    let footer = row(area, area.height.saturating_sub(1));
+    let footer_rule = row(area, area.height.saturating_sub(2));
     let mut body = below(area, 1);
-    body.height = body.height.saturating_sub(1);
+    body.height = body.height.saturating_sub(2);
     let status = app.status().map(|status| {
-        let lines = styled_wrapped(
+        styled_wrapped(
             &status.text,
             area.width,
             body.height.min(3),
-            theme::status(status.level),
-        );
-        body.height = body.height.saturating_sub(lines.len() as u16);
-        lines
+            backdrop.status(status.level),
+        )
     });
+    if let Some(lines) = status {
+        body.height = body.height.saturating_sub(lines.len() as u16);
+        render_lines(
+            frame,
+            below(area, body.bottom().saturating_sub(area.y)),
+            lines,
+        );
+    }
+    if area.height >= 3 {
+        rule(frame, footer_rule, backdrop.rule);
+    }
 
-    let (title, help) = match app.mode() {
-        Mode::List => {
-            list::render(frame, app, body, true, &mut hits);
-            (list::title(app), list::help(app).collect())
+    let paths = app.backend().paths();
+    let base_help = match app.mode() {
+        Mode::List | Mode::Notice(_) | Mode::Update(_) => {
+            list::header(frame, app, header, backdrop, &mut hits);
+            list::render(frame, app, body, backdrop, &mut hits);
+            list::help(app)
         }
-        Mode::Form(state) => {
-            form::render(frame, app, state, body, true, &mut hits);
-            (form::title(state), form::help(state).to_vec())
+        Mode::Form(_) | Mode::KeyPicker(_) => {
+            let Some(state) = app.form() else { return hits };
+            let (title, source) = form::heading(state, paths);
+            header_line(
+                frame,
+                header,
+                headline(title, bold(backdrop.text), backdrop),
+                &source,
+                backdrop.muted,
+            );
+            form::render(frame, app, state, body, backdrop, &mut hits);
+            form::help(app, state)
         }
         Mode::Confirm(state) => {
-            overlays::confirm(frame, state, app.backend().paths(), body, &mut hits);
-            (
-                state.title(),
-                vec![
-                    ("y/Enter", "confirm", Some(KeyCode::Char('y'))),
-                    ("n/Esc", "cancel", Some(KeyCode::Char('n'))),
-                    ("Up/Down", "scroll", None),
-                ],
-            )
-        }
-        Mode::KeyPicker(state) => {
-            let form = state.form();
-            form::render(frame, app, form, body, false, &mut hits);
-            overlays::key_picker(frame, state, body, &mut hits);
-            (
-                form::title(form),
-                vec![
-                    ("Enter", "select", Some(KeyCode::Enter)),
-                    ("Esc", "cancel", Some(KeyCode::Esc)),
-                ],
-            )
-        }
-        Mode::Notice(state) => {
-            list::render(frame, app, body, false, &mut hits);
-            overlays::notice(frame, state, body, &mut hits);
-            let help = if state.connects() {
-                vec![
-                    ("Enter", "connect anyway", Some(KeyCode::Enter)),
-                    ("Esc", "back to list", Some(KeyCode::Esc)),
-                ]
-            } else {
-                vec![("Enter/Esc", "back to list", Some(KeyCode::Enter))]
-            };
-            (list::title(app), help)
-        }
-        Mode::Update(state) => {
-            list::render(frame, app, body, false, &mut hits);
-            overlays::update(frame, state, body, &mut hits);
-            let help = if state.can_run() {
-                vec![
-                    ("Enter", "update and exit", Some(KeyCode::Enter)),
-                    ("Esc", "cancel", Some(KeyCode::Esc)),
-                ]
-            } else {
-                vec![("Esc", "close", Some(KeyCode::Esc))]
-            };
-            (list::title(app), help)
+            let path = paths.abbreviate_home(state.path());
+            header_line(
+                frame,
+                header,
+                headline(state.title(), bold(theme.text), theme),
+                &path,
+                theme.muted,
+            );
+            overlays::confirm(frame, state, paths, body, theme);
+            (true, overlays::confirm_help(state))
         }
     };
-
-    let update_notice = if matches!(app.mode(), Mode::List) {
-        app.update_plan().map(|plan| plan.notice())
-    } else {
-        None
+    let help = match app.mode() {
+        Mode::KeyPicker(state) => (
+            true,
+            overlays::key_picker(frame, state, paths, body, theme, &mut hits),
+        ),
+        Mode::Notice(state) => (true, overlays::notice(frame, state, body, theme, &mut hits)),
+        Mode::Update(state) => (true, overlays::update(frame, state, body, theme, &mut hits)),
+        _ => base_help,
     };
-    render_header(frame, title, update_notice, row(area, 0), &mut hits);
-    if let Some(lines) = status {
-        let status_area = below(area, body.bottom().saturating_sub(area.y));
-        render_lines(frame, status_area, lines);
-    }
     if area.height >= 2 {
-        render_help(frame, help, row(area, area.height - 1), &mut hits);
+        render_help(frame, help, footer, theme, &mut hits, app);
     }
     hits
 }
 
-fn render_header(
+fn headline(title: String, style: Style, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("sshtui", bold(theme.accent)),
+        Span::raw("  "),
+        Span::styled(title, style),
+    ])
+}
+
+fn render_help<B: Backend>(
     frame: &mut Frame,
-    title: String,
-    notice: Option<String>,
-    area: Rect,
+    (enabled, hints): KeyHints,
+    mut area: Rect,
+    theme: &Theme,
     hits: &mut HitMap,
+    app: &App<B>,
 ) {
-    let badge = if area.width < 8 { "sshtui" } else { " sshtui " };
-    let mut line = Line::from(vec![
-        Span::styled(badge, theme::SELECTED),
-        Span::raw(" "),
-        Span::raw(title),
-    ]);
-    if let Some(notice) = notice {
-        let notice = Span::styled(notice, theme::UPDATE_NOTICE);
-        if let Some(gap) = usize::from(area.width).checked_sub(line.width() + notice.width())
-            && gap > 0
-        {
-            hits.add(
-                right_of(area, area.width - notice.width() as u16),
-                ClickTarget::UpdateNotice,
-            );
-            line.push_span(Span::raw(" ".repeat(gap)));
-            line.push_span(notice);
+    for (index, &(key, description, code)) in hints.iter().enumerate() {
+        let (key, key_style, description_style) = if index == 0 {
+            (
+                format!(" {key} "),
+                theme.badge(enabled),
+                if enabled { theme.text } else { theme.muted },
+            )
+        } else {
+            let style = if code == Some(KeyCode::F(3)) && app.picker_unavailable_reason().is_some()
+            {
+                theme.muted
+            } else {
+                theme.text
+            };
+            (key.to_owned(), bold(style), theme.muted)
+        };
+        let width = (key.width() + 1 + description.width()) as u16;
+        if width > area.width {
+            break;
         }
+        let rect = left(area, width);
+        frame.render_widget(
+            Line::from(vec![
+                Span::styled(key, key_style),
+                Span::raw(" "),
+                Span::styled(description, description_style),
+            ]),
+            rect,
+        );
+        if let Some(code) = code {
+            hits.add(rect, ClickTarget::Key(code));
+        }
+        area = right_of(area, width.saturating_add(3));
     }
-    frame.render_widget(line, area);
 }
-
-fn render_help(frame: &mut Frame, hints: Vec<KeyHint>, area: Rect, hits: &mut HitMap) {
-    let mut line = Line::default();
-    let mut offset = 0;
-    for (index, (key, description, code)) in hints.into_iter().enumerate() {
-        if index > 0 {
-            line.push_span(Span::raw("  "));
-            offset += 2;
-        }
-        let width = key.width() + 1 + description.width();
-        if let Some(code) = code
-            && offset + width <= usize::from(area.width)
-        {
-            hits.add(
-                left(right_of(area, offset as u16), width as u16),
-                ClickTarget::Key(code),
-            );
-        }
-        line.push_span(Span::styled(key, theme::EMPHASIS));
-        line.push_span(Span::raw(" "));
-        line.push_span(Span::styled(description, theme::MUTED));
-        offset += width;
-    }
-    frame.render_widget(line, area);
-}
-
 fn styled_wrapped(text: &str, width: u16, max_rows: u16, style: Style) -> Vec<Line<'static>> {
     wrapped_lines(text, width, max_rows)
         .into_iter()
@@ -212,6 +207,7 @@ fn labeled_lines(
     width: u16,
     label_width: u16,
     max_rows: u16,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut lines = wrapped_lines(value, width.saturating_sub(label_width), max_rows);
     if lines.is_empty() && width > 0 && max_rows > 0 {
@@ -222,7 +218,7 @@ fn labeled_lines(
         let width = usize::from(label_width);
         line.spans.insert(
             0,
-            Span::styled(format!("{label:<width$.width$}"), theme::MUTED),
+            Span::styled(format!("{label:<width$.width$}"), theme.muted),
         );
     }
     lines
@@ -241,7 +237,7 @@ fn wrapped_lines(text: &str, width: u16, max_rows: u16) -> Vec<Line<'static>> {
         let mut line = String::new();
         let mut cells = 0;
         let mut word_break = None;
-        'graphemes: for grapheme in Span::raw(logical_line).styled_graphemes(theme::PLAIN) {
+        'graphemes: for grapheme in Span::raw(logical_line).styled_graphemes(PLAIN) {
             let symbol = grapheme.symbol;
             let symbol_width = symbol.width();
             if symbol_width > width {
@@ -291,7 +287,7 @@ fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16, usi
     let mut column = cursor;
     let mut start = 0;
     // Drop whole graphemes so horizontal scrolling never exposes a partial character.
-    for grapheme in Span::raw(value).styled_graphemes(theme::PLAIN) {
+    for grapheme in Span::raw(value).styled_graphemes(PLAIN) {
         let cells = grapheme.symbol.width();
         if column < width || cells > column {
             break;
@@ -304,6 +300,17 @@ fn input_window(input: &TextInput, width: u16, focused: bool) -> (&str, u16, usi
         column.min(width - 1) as u16,
         cursor - column,
     )
+}
+
+fn command_lines(command: &str, width: u16, max_rows: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = styled_wrapped(command, width.saturating_sub(2), max_rows, theme.accent);
+    for (index, line) in lines.iter_mut().enumerate() {
+        line.spans.insert(
+            0,
+            Span::styled(if index == 0 { "$ " } else { "  " }, theme.muted),
+        );
+    }
+    lines
 }
 
 #[cfg(test)]

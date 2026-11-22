@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crossterm::event::KeyEvent;
 
-use crate::config::{ConfigSet, HostEntry, ReadWarning};
+use crate::config::{ConfigSet, FieldState, HostEntry, OptionKey, ReadWarning, block_fields};
 use crate::ssh::effective::EffectiveConfig;
 
 use super::{Backend, TextInput};
@@ -15,6 +15,8 @@ use super::{Backend, TextInput};
 pub struct HostRow<'a> {
     /// Alias and source location.
     pub entry: &'a HostEntry,
+    /// User and address taken from the alias's own block.
+    pub summary: &'a str,
     /// Whether changes to the source file are unavailable.
     pub read_only: bool,
 }
@@ -25,6 +27,7 @@ pub(super) struct ListState {
     pub(super) filtering: bool,
     pub(super) selection: usize,
     visible: Vec<usize>,
+    summaries: Vec<String>,
     effective: HashMap<String, Result<EffectiveConfig, String>>,
     writable: HashMap<PathBuf, bool>,
 }
@@ -38,6 +41,7 @@ impl ListState {
             let entry = &config.hosts[index];
             HostRow {
                 entry,
+                summary: &self.summaries[index],
                 read_only: self.is_read_only(entry),
             }
         })
@@ -120,6 +124,11 @@ impl ListState {
     ) {
         self.effective.clear();
         self.writable.clear();
+        self.summaries = config
+            .hosts
+            .iter()
+            .map(|entry| host_summary(config, entry))
+            .collect();
         for entry in &config.hosts {
             self.writable
                 .entry(entry.source.clone())
@@ -144,6 +153,22 @@ impl ListState {
                 .position(|&index| config.hosts[index].name == name)
         });
         self.select(preferred.unwrap_or(fallback));
+    }
+}
+
+fn host_summary(config: &ConfigSet, entry: &HostEntry) -> String {
+    let fields = config
+        .files
+        .get(entry.file_index)
+        .and_then(|file| block_fields(&file.parsed, entry.block_index).ok());
+    let value = |key| match fields.as_ref()?.get(key) {
+        FieldState::Value(value) => Some(value.as_str()),
+        _ => None,
+    };
+    let address = value(OptionKey::HostName).unwrap_or(&entry.name);
+    match value(OptionKey::User) {
+        Some(user) => format!("{user}@{address}"),
+        None => address.to_owned(),
     }
 }
 

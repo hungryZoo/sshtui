@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sshtui review changes before saving</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 912px; height: 664px; box-sizing: border-box; padding: 20px 24px; background: #15171c; color: #d8dbe1; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 15px; line-height: 24px; display: flex; flex-direction: column">
+<div style="display: flex; justify-content: space-between; height: 24px">
+<div style="display: flex; gap: 2ch"><span style="font-weight: 700; color: #6fd3c1">sshtui</span><span style="font-weight: 700">Save staging</span></div>
+<span style="color: #8d94a0">~/.ssh/config</span>
+</div>
+<div style="height: 24px; display: flex; align-items: center"><div style="flex: 1; height: 1px; background: #3a404b"></div></div>
+<div style="display: flex; gap: 2ch; height: 24px"><span>2 lines will change</span><span style="color: #f08a8a">-2</span><span style="color: #9ccf82">+2</span></div>
+<div style="height: 24px"></div>
+<div style="display: flex; flex-direction: column; flex: 1; min-height: 0">
+<div style="display: flex; height: 24px; color: #8d94a0"><span style="width: 5ch; text-align: right">21</span><span style="width: 5ch; text-align: right">21</span><span style="width: 4ch; text-align: center"></span><span>Host staging</span></div>
+<div style="display: flex; height: 24px; color: #8d94a0"><span style="width: 5ch; text-align: right">22</span><span style="width: 5ch; text-align: right">22</span><span style="width: 4ch; text-align: center"></span><span style="padding-left: 4ch">HostName staging.example.com</span></div>
+<div style="display: flex; height: 24px; background: #3a2226; color: #f08a8a"><span style="width: 5ch; text-align: right">23</span><span style="width: 5ch"></span><span style="width: 4ch; text-align: center; font-weight: 700">-</span><span style="padding-left: 4ch">Port 22</span></div>
+<div style="display: flex; height: 24px; background: #1f3326; color: #9ccf82"><span style="width: 5ch"></span><span style="width: 5ch; text-align: right">23</span><span style="width: 4ch; text-align: center; font-weight: 700">+</span><span style="padding-left: 4ch">Port 2222</span></div>
+<div style="display: flex; height: 24px; background: #3a2226; color: #f08a8a"><span style="width: 5ch; text-align: right">24</span><span style="width: 5ch"></span><span style="width: 4ch; text-align: center; font-weight: 700">-</span><span style="padding-left: 4ch">IdentityFile ~/.ssh/id_rsa</span></div>
+<div style="display: flex; height: 24px; background: #1f3326; color: #9ccf82"><span style="width: 5ch"></span><span style="width: 5ch; text-align: right">24</span><span style="width: 4ch; text-align: center; font-weight: 700">+</span><span style="padding-left: 4ch">IdentityFile ~/.ssh/work_ed25519</span></div>
+<div style="display: flex; height: 24px; color: #8d94a0"><span style="width: 5ch; text-align: right">25</span><span style="width: 5ch; text-align: right">25</span><span style="width: 4ch"></span><span></span></div>
+<div style="display: flex; height: 24px; color: #8d94a0"><span style="width: 5ch; text-align: right">26</span><span style="width: 5ch; text-align: right">26</span><span style="width: 4ch"></span><span>Host ci-runner</span></div>
+</div>
+<div style="height: 24px; color: #8d94a0">The current file is kept as ~/.ssh/.config.sshtui.bak</div>
+<div style="height: 24px; display: flex; align-items: center"><div style="flex: 1; height: 1px; background: #3a404b"></div></div>
+<div style="display: flex; gap: 3ch; height: 24px">
+<div style="display: flex; gap: 1ch"><span style="background: #6fd3c1; color: #15171c; font-weight: 700; padding: 0 1ch">y</span><span>save</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">n</span><span style="color: #8d94a0">back to form</span></div>
+<div style="display: flex; gap: 1ch"><span style="font-weight: 700">↑↓</span><span style="color: #8d94a0">scroll</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":912,"height":664}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

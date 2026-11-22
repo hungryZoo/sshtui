@@ -1,26 +1,32 @@
-//! Shared row and panel geometry.
+//! Shared geometry and cell-aware text rendering.
 
 use std::borrow::Cow;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::theme;
+use super::theme::PLAIN;
 
-/// Returns a row within the area or an empty rectangle.
-pub(super) fn row(area: Rect, offset: u16) -> Rect {
-    Rect::new(
-        area.x,
-        area.y.saturating_add(offset.min(area.height)),
-        area.width,
-        u16::from(offset < area.height),
-    )
+pub(super) fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
+    let area = below(right_of(area, horizontal), vertical);
+    Rect {
+        width: area.width.saturating_sub(horizontal),
+        height: area.height.saturating_sub(vertical),
+        ..area
+    }
 }
 
-/// Returns the area below the given number of rows.
+pub(super) fn row(area: Rect, offset: u16) -> Rect {
+    Rect {
+        height: u16::from(offset < area.height),
+        ..below(area, offset)
+    }
+}
+
 pub(super) fn below(area: Rect, rows: u16) -> Rect {
     Rect::new(
         area.x,
@@ -30,7 +36,6 @@ pub(super) fn below(area: Rect, rows: u16) -> Rect {
     )
 }
 
-/// Returns the first columns of the area.
 pub(super) fn left(area: Rect, width: u16) -> Rect {
     Rect {
         width: width.min(area.width),
@@ -38,7 +43,6 @@ pub(super) fn left(area: Rect, width: u16) -> Rect {
     }
 }
 
-/// Returns the columns after the given horizontal offset.
 pub(super) fn right_of(area: Rect, width: u16) -> Rect {
     Rect::new(
         area.x.saturating_add(width.min(area.width)),
@@ -48,39 +52,51 @@ pub(super) fn right_of(area: Rect, width: u16) -> Rect {
     )
 }
 
-/// Checks whether a border can enclose at least one content cell.
-pub(super) fn has_border(area: Rect) -> bool {
-    area.width >= 3 && area.height >= 3
+pub(super) fn rule(frame: &mut Frame, area: Rect, style: Style) {
+    put(frame, area, &"─".repeat(usize::from(area.width)), style);
 }
 
-/// Draws a border when it fits and returns the content area.
-pub(super) fn draw_panel(
+pub(super) fn put(frame: &mut Frame, area: Rect, text: &str, style: Style) {
+    frame.render_widget(Span::styled(clip_cells(text, area.width), style), area);
+}
+
+pub(super) fn put_right(frame: &mut Frame, area: Rect, text: &str, style: Style) {
+    let text = tail_cells(text, area.width);
+    let offset = area.width.saturating_sub(text.width() as u16);
+    put(frame, right_of(area, offset), text, style);
+}
+
+fn tail_cells(text: &str, width: u16) -> &str {
+    let mut remaining = text.width().saturating_sub(usize::from(width));
+    let mut start = 0;
+    for grapheme in Span::raw(text).styled_graphemes(PLAIN) {
+        if remaining == 0 {
+            break;
+        }
+        remaining = remaining.saturating_sub(grapheme.symbol.width());
+        // Use the source offset because styled_graphemes skips control characters.
+        if let Some(offset) = text[start..].find(grapheme.symbol) {
+            start += offset + grapheme.symbol.len();
+        }
+    }
+    &text[start..]
+}
+
+pub(super) fn header_line(
     frame: &mut Frame,
     area: Rect,
-    title: Option<Line<'_>>,
-    active: bool,
-) -> Rect {
-    if !has_border(area) {
-        return area;
+    title: Line<'_>,
+    note: &str,
+    note_style: Style,
+) {
+    if note.is_empty() {
+        frame.render_widget(title, area);
+        return;
     }
-    let block = theme::panel(title, active);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    inner
-}
-
-/// Adds horizontal spacing around the panel title.
-pub(super) fn panel_title(title: &str) -> Line<'static> {
-    Line::from(format!(" {title} "))
-}
-
-/// Adds a column of padding on each side when space permits.
-pub(super) fn inset_horizontal(area: Rect) -> Rect {
-    if area.width < 8 {
-        area
-    } else {
-        left(right_of(area, 1), area.width.saturating_sub(2))
-    }
+    let title_width = u16::try_from(title.width()).unwrap_or(u16::MAX);
+    let note_area = right_of(area, title_width.saturating_add(2));
+    put_right(frame, note_area, note, note_style);
+    frame.render_widget(title, left(area, title_width));
 }
 
 /// Draws text and returns the area below its visible rows.
@@ -114,7 +130,7 @@ pub(super) fn clip_cells(value: &str, width: u16) -> Cow<'_, str> {
     }
     let mut remaining = usize::from(width);
     Cow::Owned(
-        span.styled_graphemes(theme::PLAIN)
+        span.styled_graphemes(PLAIN)
             .map_while(|grapheme| {
                 remaining = remaining.checked_sub(grapheme.symbol.width())?;
                 Some(grapheme.symbol)
