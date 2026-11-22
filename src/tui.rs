@@ -32,6 +32,7 @@ pub struct Options {
 /// Detects double clicks using caller-supplied times.
 #[derive(Debug, Default)]
 pub struct ClickTracker {
+    pressed: Option<ClickTarget>,
     last: Option<(ClickTarget, u16, u16, Instant)>,
 }
 
@@ -102,7 +103,7 @@ fn run_loop<B: Backend>(mut app: App<B>, options: Options) -> io::Result<Exit> {
         terminal.draw(|frame| hits = ui::render(frame, &app))?;
         loop {
             let mouse = options.mouse.then_some((&hits, &mut clicks));
-            if handle_event(&mut app, event::read()?, mouse) {
+            if handle_event(&mut app, event::read()?, mouse, Instant::now()) {
                 break;
             }
         }
@@ -111,6 +112,17 @@ fn run_loop<B: Backend>(mut app: App<B>, options: Options) -> io::Result<Exit> {
         }
     };
 
+    if options.mouse {
+        // Stop new mouse reports and discard queued input while raw mode is still active.
+        execute!(stdout(), DisableMouseCapture)?;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            if !event::poll(remaining.min(Duration::from_millis(50)))? {
+                break;
+            }
+            event::read()?;
+        }
+    }
     restore_terminal()?;
     session.restored = true;
     Ok(exit)
@@ -120,6 +132,7 @@ fn handle_event<B: Backend>(
     app: &mut App<B>,
     event: Event,
     mouse_context: Option<(&HitMap, &mut ClickTracker)>,
+    now: Instant,
 ) -> bool {
     match event {
         Event::Key(key) => app.handle_key(key),
@@ -131,11 +144,19 @@ fn handle_event<B: Backend>(
             };
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
-                    let Some(target) = hits.hit(mouse.column, mouse.row) else {
+                    clicks.pressed = hits.hit(mouse.column, mouse.row).cloned();
+                    return false;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    let Some(target) = clicks
+                        .pressed
+                        .take()
+                        .filter(|target| hits.hit(mouse.column, mouse.row) == Some(target))
+                    else {
                         return false;
                     };
-                    let double = clicks.register(target, mouse.column, mouse.row, Instant::now());
-                    app.handle_click(target.clone(), double);
+                    let double = clicks.register(&target, mouse.column, mouse.row, now);
+                    app.handle_click(target, double);
                 }
                 MouseEventKind::ScrollUp => app.handle_scroll(false),
                 MouseEventKind::ScrollDown => app.handle_scroll(true),
@@ -177,22 +198,47 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
     use ratatui::backend::TestBackend;
 
+    const SECOND_HOST: (u16, u16) = (12, 3);
+    const LEFT_DOWN: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+    const LEFT_UP: MouseEventKind = MouseEventKind::Up(MouseButton::Left);
+
+    fn rendered_hits(app: &App<FakeBackend>, height: u16) -> HitMap {
+        let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|frame| hits = ui::render(frame, app))
+            .unwrap();
+        hits
+    }
+
+    fn mouse_event(kind: MouseEventKind, (column, row): (u16, u16)) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
     #[test]
     fn dispatches_keys_and_paste_and_ignores_other_events() {
         let mut app = App::new(FakeBackend::new("Host web\nHost db\n"));
+        let now = Instant::now();
         handle_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
             None,
+            now,
         );
         assert_eq!(app.selection(), Some(1));
         handle_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
             None,
+            now,
         );
         assert!(matches!(app.mode(), Mode::Form(_)));
-        handle_event(&mut app, Event::Paste("new-host".into()), None);
+        handle_event(&mut app, Event::Paste("new-host".into()), None, now);
 
         for event in [
             Event::Resize(20, 10),
@@ -205,7 +251,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }),
         ] {
-            handle_event(&mut app, event, None);
+            handle_event(&mut app, event, None, now);
         }
         let form = app.form().unwrap();
         assert_eq!(form.focus(), FormField::Nickname);
@@ -246,20 +292,9 @@ mod tests {
     #[test]
     fn mouse_dispatch_uses_the_rendered_hits_and_skips_redraw_for_ignored_events() {
         let mut app = App::new(FakeBackend::new("Host web\nHost db\n"));
-        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|frame| hits = ui::render(frame, &app))
-            .unwrap();
+        let hits = rendered_hits(&app, 10);
         let mut clicks = ClickTracker::default();
-        let mouse = |kind, column| {
-            Event::Mouse(MouseEvent {
-                kind,
-                column,
-                row: 3,
-                modifiers: KeyModifiers::NONE,
-            })
-        };
+        let now = Instant::now();
         for kind in [
             MouseEventKind::Moved,
             MouseEventKind::Drag(MouseButton::Left),
@@ -269,17 +304,25 @@ mod tests {
         ] {
             assert!(!handle_event(
                 &mut app,
-                mouse(kind, 12),
-                Some((&hits, &mut clicks))
+                mouse_event(kind, SECOND_HOST),
+                Some((&hits, &mut clicks)),
+                now,
             ));
         }
-        let click = |column| mouse(MouseEventKind::Down(MouseButton::Left), column);
-        assert!(!handle_event(
-            &mut app,
-            click(0),
-            Some((&hits, &mut clicks))
-        ));
-        assert!(!handle_event(&mut app, click(12), None));
+        for kind in [LEFT_DOWN, LEFT_UP] {
+            assert!(!handle_event(
+                &mut app,
+                mouse_event(kind, (0, SECOND_HOST.1)),
+                Some((&hits, &mut clicks)),
+                now,
+            ));
+            assert!(!handle_event(
+                &mut app,
+                mouse_event(kind, SECOND_HOST),
+                None,
+                now
+            ));
+        }
         assert_eq!(app.selection(), Some(0));
 
         for (kind, selection) in [
@@ -288,17 +331,137 @@ mod tests {
         ] {
             assert!(handle_event(
                 &mut app,
-                mouse(kind, 12),
-                Some((&hits, &mut clicks))
+                mouse_event(kind, SECOND_HOST),
+                Some((&hits, &mut clicks)),
+                now,
             ));
             assert_eq!(app.selection(), Some(selection));
         }
+        assert!(!handle_event(
+            &mut app,
+            mouse_event(LEFT_DOWN, SECOND_HOST),
+            Some((&hits, &mut clicks)),
+            now,
+        ));
         assert!(handle_event(
             &mut app,
-            click(12),
-            Some((&hits, &mut clicks))
+            mouse_event(LEFT_UP, SECOND_HOST),
+            Some((&hits, &mut clicks)),
+            now,
         ));
         assert_eq!(app.selection(), Some(1));
         assert_eq!(app.exit(), None);
+    }
+
+    #[test]
+    fn left_press_does_not_change_selection_or_request_redraw() {
+        let mut app = App::new(FakeBackend::new("Host web\nHost db\n"));
+        let hits = rendered_hits(&app, 10);
+        let mut clicks = ClickTracker::default();
+        assert!(!handle_event(
+            &mut app,
+            mouse_event(LEFT_DOWN, SECOND_HOST),
+            Some((&hits, &mut clicks)),
+            Instant::now(),
+        ));
+        assert_eq!(app.selection(), Some(0));
+        assert_eq!(app.exit(), None);
+    }
+
+    #[test]
+    fn left_release_on_the_pressed_host_row_selects_it() {
+        let mut app = App::new(FakeBackend::new("Host web\nHost db\n"));
+        let hits = rendered_hits(&app, 10);
+        let mut clicks = ClickTracker::default();
+        let now = Instant::now();
+        handle_event(
+            &mut app,
+            mouse_event(LEFT_DOWN, SECOND_HOST),
+            Some((&hits, &mut clicks)),
+            now,
+        );
+        assert!(handle_event(
+            &mut app,
+            mouse_event(LEFT_UP, (SECOND_HOST.0 + 1, SECOND_HOST.1)),
+            Some((&hits, &mut clicks)),
+            now,
+        ));
+        assert_eq!(app.selection(), Some(1));
+        assert_eq!(app.exit(), None);
+    }
+
+    #[test]
+    fn releasing_off_the_pressed_button_clears_the_press_without_acting() {
+        let mut app = App::new(FakeBackend::new(""));
+        let hits = rendered_hits(&app, 24);
+        let button = (0..24)
+            .flat_map(|row| (0..80).map(move |column| (column, row)))
+            .find(|&(column, row)| hits.hit(column, row) == Some(&ClickTarget::Key(KeyCode::F(2))))
+            .unwrap();
+        let field = (12, 4);
+        assert!(matches!(
+            hits.hit(field.0, field.1),
+            Some(ClickTarget::FormField {
+                field: FormField::Address,
+                ..
+            })
+        ));
+
+        let mut clicks = ClickTracker::default();
+        let now = Instant::now();
+        for (kind, cell) in [(LEFT_DOWN, button), (LEFT_UP, field), (LEFT_UP, button)] {
+            assert!(!handle_event(
+                &mut app,
+                mouse_event(kind, cell),
+                Some((&hits, &mut clicks)),
+                now,
+            ));
+            assert_eq!(app.form().unwrap().focus(), FormField::Nickname);
+            assert_eq!(app.exit(), None);
+        }
+    }
+
+    #[test]
+    fn left_release_without_a_press_is_ignored() {
+        let mut app = App::new(FakeBackend::new("Host web\nHost db\n"));
+        let hits = rendered_hits(&app, 10);
+        let mut clicks = ClickTracker::default();
+        assert!(!handle_event(
+            &mut app,
+            mouse_event(LEFT_UP, SECOND_HOST),
+            Some((&hits, &mut clicks)),
+            Instant::now(),
+        ));
+        assert_eq!(app.selection(), Some(0));
+        assert_eq!(app.exit(), None);
+    }
+
+    #[test]
+    fn double_click_connects_on_the_second_release_using_release_times() {
+        let mut app = App::new(FakeBackend::new("Host web\nHost db\n"));
+        let mut hits = rendered_hits(&app, 10);
+        let mut clicks = ClickTracker::default();
+        let now = Instant::now();
+        let connect = Exit::Connect(vec!["db".into()]);
+        for (kind, ms, redraw, exit) in [
+            (LEFT_DOWN, 0, false, None),
+            (LEFT_UP, 100, true, None),
+            (LEFT_DOWN, 450, false, None),
+            (LEFT_UP, 500, true, Some(&connect)),
+        ] {
+            assert_eq!(
+                handle_event(
+                    &mut app,
+                    mouse_event(kind, SECOND_HOST),
+                    Some((&hits, &mut clicks)),
+                    now + Duration::from_millis(ms),
+                ),
+                redraw,
+            );
+            assert_eq!(app.exit(), exit);
+            if redraw && exit.is_none() {
+                hits = rendered_hits(&app, 10);
+            }
+        }
     }
 }
