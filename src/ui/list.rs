@@ -7,12 +7,27 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Backend, ClickTarget, HostRow};
 
 use super::layout::{below, left, put, render_lines, right_of, row, rule, visible_rows};
-use super::theme::{PLAIN, bold};
+use super::theme::{PLAIN, ROW, bold};
 use super::{
-    HitMap, KeyHints, Theme, command_lines, headline, input_window, labeled_lines, styled_wrapped,
+    HitMap, HoverFrame, HoverKey, KeyHint, KeyHints, Theme, command_lines, headline, input_window,
+    intensity, labeled_lines, styled_wrapped,
 };
 
+const fn list_hints(escape: &'static str) -> [KeyHint; 7] {
+    [
+        ("enter", "connect", Some(KeyCode::Enter)),
+        ("n", "new", Some(KeyCode::Char('n'))),
+        ("e", "edit", Some(KeyCode::Char('e'))),
+        ("d", "delete", Some(KeyCode::Char('d'))),
+        ("/", "filter", Some(KeyCode::Char('/'))),
+        ("r", "reload", Some(KeyCode::Char('r'))),
+        ("esc", escape, Some(KeyCode::Esc)),
+    ]
+}
+
 pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
+    const UNFILTERED: &[KeyHint] = &list_hints("quit");
+    const FILTERED: &[KeyHint] = &list_hints("clear filter");
     if app.is_filtering() {
         (
             true,
@@ -25,15 +40,11 @@ pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
     } else {
         (
             app.selection().is_some(),
-            &[
-                ("enter", "connect", Some(KeyCode::Enter)),
-                ("n", "new", Some(KeyCode::Char('n'))),
-                ("e", "edit", Some(KeyCode::Char('e'))),
-                ("d", "delete", Some(KeyCode::Char('d'))),
-                ("/", "filter", Some(KeyCode::Char('/'))),
-                ("r", "reload", Some(KeyCode::Char('r'))),
-                ("q", "quit", Some(KeyCode::Char('q'))),
-            ],
+            if app.filter().value().is_empty() {
+                UNFILTERED
+            } else {
+                FILTERED
+            },
         )
     }
 }
@@ -44,6 +55,7 @@ pub(super) fn header<B: Backend>(
     area: Rect,
     theme: &Theme,
     hits: &mut HitMap,
+    hover: HoverFrame<'_>,
 ) {
     let total = app.host_count();
     let title = if app.is_filtering() || !app.filter().value().is_empty() {
@@ -53,10 +65,12 @@ pub(super) fn header<B: Backend>(
     };
     let line = headline(title, theme.muted, theme);
     if app.update_plan().is_some() {
+        let t = intensity(hover, HoverKey::UpdateNotice);
         let notice = Line::from(vec![
             Span::styled("update available ", theme.warn),
             Span::styled("u", bold(theme.warn)),
-        ]);
+        ])
+        .style(theme.hover_text(theme.hover_background(PLAIN, ROW, t), t));
         let width = notice.width() as u16;
         let offset = area.width.saturating_sub(width);
         if usize::from(offset) >= line.width() + 2 {
@@ -74,11 +88,12 @@ pub(super) fn render<B: Backend>(
     body: Rect,
     theme: &Theme,
     hits: &mut HitMap,
+    hover: HoverFrame<'_>,
 ) {
     // A compact screen drops the empty row and rule before it loses the list.
     let filter_row = u16::from(body.height >= 4);
     let show_rule = body.height >= 4;
-    render_filter(frame, app, row(body, filter_row), theme, hits);
+    render_filter(frame, app, row(body, filter_row), theme, hits, hover);
     if show_rule {
         rule(frame, row(body, 2), theme.rule);
     }
@@ -90,7 +105,7 @@ pub(super) fn render<B: Backend>(
     } else {
         content.width
     };
-    render_hosts(frame, app, left(content, width), theme, hits);
+    render_hosts(frame, app, left(content, width), theme, hits, hover);
     if split {
         let divider = left(right_of(content, width), 1);
         for rect in divider.rows() {
@@ -111,12 +126,16 @@ fn render_filter<B: Backend>(
     area: Rect,
     theme: &Theme,
     hits: &mut HitMap,
+    hover: HoverFrame<'_>,
 ) {
     if area.is_empty() {
         return;
     }
     let filtering = app.is_filtering();
-    frame.buffer_mut().set_style(area, theme.input(filtering));
+    let t = intensity(hover, HoverKey::Key(KeyCode::Char('/')));
+    frame
+        .buffer_mut()
+        .set_style(area, theme.hover_input(filtering, t));
     put(
         frame,
         left(right_of(area, 1), 1),
@@ -148,6 +167,7 @@ fn render_hosts<B: Backend>(
     area: Rect,
     theme: &Theme,
     hits: &mut HitMap,
+    hover: HoverFrame<'_>,
 ) {
     let hosts = app.filtered_hosts();
     if hosts.len() == 0 {
@@ -167,15 +187,20 @@ fn render_hosts<B: Backend>(
     };
     let filter = app.filter().value().to_lowercase();
     for ((index, rect), host) in rows.zip(hosts.skip(first)) {
-        render_host(
-            frame,
-            rect,
-            host,
-            selection == Some(index),
-            name_width,
-            &filter,
-            theme,
-        );
+        let selected = selection == Some(index);
+        let t = intensity(hover, HoverKey::HostRow(index));
+        frame
+            .buffer_mut()
+            .set_style(rect, theme.hover_row(selected, t));
+        if selected {
+            put(
+                frame,
+                left(rect, 1),
+                "›",
+                theme.selected(bold(theme.accent), true),
+            );
+        }
+        render_host(frame, rect, host, (selected, t), name_width, &filter, theme);
         hits.add(rect, ClickTarget::HostRow(index));
     }
 }
@@ -184,20 +209,11 @@ fn render_host(
     frame: &mut Frame,
     area: Rect,
     host: HostRow<'_>,
-    selected: bool,
+    (selected, t): (bool, f32),
     name_width: u16,
     filter: &str,
     theme: &Theme,
 ) {
-    if selected {
-        frame.buffer_mut().set_style(area, theme.row);
-        put(
-            frame,
-            left(area, 1),
-            "›",
-            theme.selected(bold(theme.accent), true),
-        );
-    }
     let content = right_of(left(area, area.width.saturating_sub(1)), 2);
     let names = left(content, name_width);
     let summary = right_of(content, name_width);
@@ -209,13 +225,16 @@ fn render_host(
         0
     };
 
-    let regular = theme.selected(
-        if selected {
-            bold(theme.text)
-        } else {
-            theme.text
-        },
-        selected,
+    let regular = theme.hover_text(
+        theme.selected(
+            if selected {
+                bold(theme.text)
+            } else {
+                theme.text
+            },
+            selected,
+        ),
+        t,
     );
     let name = host.entry.name.as_str();
     let line = match match_range(name, filter) {
@@ -223,7 +242,7 @@ fn render_host(
             Span::styled(&name[..start], regular),
             Span::styled(
                 &name[start..end],
-                theme.selected(bold(theme.accent), selected),
+                theme.hover_text(theme.selected(bold(theme.accent), selected), t),
             ),
             Span::styled(&name[end..], regular),
         ]),
@@ -235,7 +254,14 @@ fn render_host(
         frame,
         left(summary, summary_width),
         host.summary,
-        theme.selected(if selected { theme.text } else { theme.muted }, selected),
+        theme.selected(
+            if selected {
+                theme.text
+            } else {
+                theme.hover_muted(t)
+            },
+            selected,
+        ),
     );
     if marker_width > 0 {
         put(

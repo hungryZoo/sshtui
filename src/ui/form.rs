@@ -11,7 +11,10 @@ use crate::validate::ValidationError;
 
 use super::layout::{below, clip_cells, left, render_lines, right_of, row, rule};
 use super::theme::bold;
-use super::{HitMap, KeyHint, KeyHints, Theme, command_lines, input_window, styled_wrapped};
+use super::{
+    HitMap, HoverFrame, HoverKey, KeyHint, KeyHints, Theme, command_lines, input_window, intensity,
+    styled_wrapped,
+};
 
 const TAB: KeyHint = ("tab", "next", Some(KeyCode::Tab));
 const BACK: KeyHint = ("esc", "back", Some(KeyCode::Esc));
@@ -60,6 +63,7 @@ pub(super) fn render<B: Backend>(
     area: Rect,
     theme: &Theme,
     hits: &mut HitMap,
+    hover: HoverFrame<'_>,
 ) {
     if area.is_empty() {
         return;
@@ -81,6 +85,11 @@ pub(super) fn render<B: Backend>(
         let first = lines.len();
         let input = form.input(field);
         let focused = form.focus() == field;
+        let t = if focused {
+            0.0
+        } else {
+            intensity(hover, HoverKey::FormField(field))
+        };
         if focused {
             focused_row = first;
         }
@@ -89,7 +98,7 @@ pub(super) fn render<B: Backend>(
         } else {
             app.validation_error(field)
         };
-        let label = columns.label(field, focused, error.is_some(), theme);
+        let label = columns.label(field, focused, error.is_some(), theme, t);
         let note = (!theme.dim).then(|| requirement(form, field, theme));
         let editable = !form.is_read_only(field);
         let mut scroll = 0;
@@ -128,7 +137,7 @@ pub(super) fn render<B: Backend>(
                 }
                 None => Span::styled(value.to_owned(), theme.text),
             };
-            let style = theme.input(focused);
+            let style = theme.hover_input(focused, t);
             let value = Span::styled(
                 format!(" {} ", clip_cells(&value.content, value_width)),
                 style.patch(value.style),
@@ -201,17 +210,21 @@ impl FieldColumns {
         focused: bool,
         invalid: bool,
         theme: &Theme,
+        t: f32,
     ) -> Span<'static> {
         let style = match (focused, invalid) {
             (true, true) => bold(theme.error),
             (false, true) => theme.error,
             (true, false) => bold(theme.accent),
-            (false, false) => theme.muted,
+            (false, false) => theme.hover_muted(t),
         };
         let marker = if focused { '›' } else { ' ' };
         let caption = format!("{marker} {}", caption(field));
         let width = usize::from(self.label);
-        Span::styled(format!("{caption:<width$.width$}"), style)
+        Span::styled(
+            format!("{caption:<width$.width$}"),
+            theme.hover_text(style, t),
+        )
     }
 
     fn field_line(

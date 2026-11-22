@@ -1,10 +1,13 @@
 //! Terminal screens and mouse hit testing.
 
 mod form;
+mod hover;
 mod layout;
 mod list;
 mod overlays;
 mod theme;
+
+use std::time::Instant;
 
 use crossterm::event::KeyCode;
 use ratatui::Frame;
@@ -15,13 +18,19 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, ClickTarget, Mode, TextInput};
 
+pub use self::hover::{Hover, HoverKey};
 pub use self::theme::{ColorMode, Theme};
 
 use self::layout::{below, header_line, inset, left, render_lines, right_of, row, rule};
-use self::theme::{PLAIN, bold};
+use self::theme::{HOVER_ACCENT, PLAIN, ROW, bold};
 
 type KeyHint = (&'static str, &'static str, Option<KeyCode>);
 type KeyHints = (bool, &'static [KeyHint]);
+type HoverFrame<'a> = Option<(&'a Hover, Instant)>;
+
+fn intensity(hover: HoverFrame<'_>, key: HoverKey) -> f32 {
+    hover.map_or(0.0, |(hover, now)| hover.intensity(&key, now))
+}
 
 /// Clickable regions of the last rendered frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,7 +56,12 @@ impl HitMap {
 }
 
 /// Draws the screen and returns its clickable regions. No I/O.
-pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>, theme: &Theme) -> HitMap {
+pub fn render<B: Backend>(
+    frame: &mut Frame,
+    app: &App<B>,
+    theme: &Theme,
+    hover: Option<(&Hover, Instant)>,
+) -> HitMap {
     let screen = frame.area();
     let mut hits = HitMap::default();
     if screen.is_empty() {
@@ -58,6 +72,7 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>, theme: &Theme) -> Hit
         Mode::KeyPicker(_) | Mode::Notice(_) | Mode::Update(_)
     );
     let backdrop = if modal { &theme.dimmed() } else { theme };
+    let backdrop_hover = if modal { None } else { hover };
     frame.buffer_mut().set_style(screen, backdrop.base);
     let area = inset(
         screen,
@@ -92,8 +107,8 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>, theme: &Theme) -> Hit
     let paths = app.backend().paths();
     let base_help = match app.mode() {
         Mode::List | Mode::Notice(_) | Mode::Update(_) => {
-            list::header(frame, app, header, backdrop, &mut hits);
-            list::render(frame, app, body, backdrop, &mut hits);
+            list::header(frame, app, header, backdrop, &mut hits, backdrop_hover);
+            list::render(frame, app, body, backdrop, &mut hits, backdrop_hover);
             list::help(app)
         }
         Mode::Form(_) | Mode::KeyPicker(_) => {
@@ -106,7 +121,7 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>, theme: &Theme) -> Hit
                 &source,
                 backdrop.muted,
             );
-            form::render(frame, app, state, body, backdrop, &mut hits);
+            form::render(frame, app, state, body, backdrop, &mut hits, backdrop_hover);
             form::help(app, state)
         }
         Mode::Confirm(state) => {
@@ -125,14 +140,14 @@ pub fn render<B: Backend>(frame: &mut Frame, app: &App<B>, theme: &Theme) -> Hit
     let help = match app.mode() {
         Mode::KeyPicker(state) => (
             true,
-            overlays::key_picker(frame, state, paths, body, theme, &mut hits),
+            overlays::key_picker(frame, state, paths, body, theme, &mut hits, hover),
         ),
         Mode::Notice(state) => (true, overlays::notice(frame, state, body, theme, &mut hits)),
         Mode::Update(state) => (true, overlays::update(frame, state, body, theme, &mut hits)),
         _ => base_help,
     };
     if area.height >= 2 {
-        render_help(frame, help, footer, theme, &mut hits, app);
+        render_help(frame, help, footer, theme, &mut hits, app, hover);
     }
     hits
 }
@@ -152,13 +167,18 @@ fn render_help<B: Backend>(
     theme: &Theme,
     hits: &mut HitMap,
     app: &App<B>,
+    hover: HoverFrame<'_>,
 ) {
     for (index, &(key, description, code)) in hints.iter().enumerate() {
-        let (key, key_style, description_style) = if index == 0 {
+        let t = code
+            .filter(|_| index != 0 || enabled)
+            .map_or(0.0, |code| intensity(hover, HoverKey::Key(code)));
+        let (key, key_style, description_style, pair_style) = if index == 0 {
             (
                 format!(" {key} "),
-                theme.badge(enabled),
+                theme.hover_background(theme.badge(enabled), HOVER_ACCENT, t),
                 if enabled { theme.text } else { theme.muted },
+                PLAIN,
             )
         } else {
             let style = if code == Some(KeyCode::F(3)) && app.picker_unavailable_reason().is_some()
@@ -167,7 +187,12 @@ fn render_help<B: Backend>(
             } else {
                 theme.text
             };
-            (key.to_owned(), bold(style), theme.muted)
+            (
+                key.to_owned(),
+                bold(style),
+                theme.hover_muted(t),
+                theme.hover_background(PLAIN, ROW, t),
+            )
         };
         let width = (key.width() + 1 + description.width()) as u16;
         if width > area.width {
@@ -176,10 +201,11 @@ fn render_help<B: Backend>(
         let rect = left(area, width);
         frame.render_widget(
             Line::from(vec![
-                Span::styled(key, key_style),
+                Span::styled(key, theme.hover_text(key_style, t)),
                 Span::raw(" "),
                 Span::styled(description, description_style),
-            ]),
+            ])
+            .style(pair_style),
             rect,
         );
         if let Some(code) = code {

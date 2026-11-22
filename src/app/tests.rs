@@ -310,6 +310,85 @@ fn list_enter_connects_using_the_current_prefix() {
 }
 
 #[test]
+fn escape_quits_the_unfiltered_list() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+}
+
+#[test]
+fn escape_clears_an_applied_filter_then_quits() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, '/');
+    ch(&mut app, 'w');
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(names(&app), ["web"]);
+
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.filter().value(), "");
+    assert_eq!(names(&app), ["web", "db", "queue"]);
+    assert_eq!(app.exit(), None);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+}
+
+#[test]
+fn escape_clears_filter_input_and_leaves_the_list_open() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, '/');
+    ch(&mut app, 'w');
+    assert!(app.is_filtering());
+
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.filter().value(), "");
+    assert!(!app.is_filtering());
+    assert_eq!(app.exit(), None);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+}
+
+#[test]
+fn escape_closes_the_key_popup_then_returns_from_the_form() {
+    let mut app = App::new(FakeBackend::new(HOSTS).with_keys());
+    ch(&mut app, 'n');
+    key(&mut app, KeyCode::F(2));
+    assert!(matches!(app.mode(), Mode::KeyPicker(_)));
+
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::Form(_)));
+    assert_eq!(app.exit(), None);
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.exit(), None);
+}
+
+#[test]
+fn q_still_quits_the_unfiltered_list() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, 'q');
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+}
+
+#[test]
+fn clicking_escape_clears_filter_input_or_an_applied_filter_before_quitting() {
+    for applied in [false, true] {
+        let mut app = App::new(FakeBackend::new(HOSTS));
+        ch(&mut app, '/');
+        ch(&mut app, 'w');
+        if applied {
+            key(&mut app, KeyCode::Enter);
+        }
+
+        app.handle_click(ClickTarget::Key(KeyCode::Esc), false);
+        assert_eq!(app.filter().value(), "");
+        assert!(!app.is_filtering());
+        assert_eq!(app.exit(), None);
+        app.handle_click(ClickTarget::Key(KeyCode::Esc), false);
+        assert_eq!(app.exit(), Some(&Exit::Quit));
+    }
+}
+
+#[test]
 fn filter_uses_case_insensitive_substrings_and_owns_command_characters() {
     let mut app = App::new(FakeBackend::new(HOSTS));
     ch(&mut app, 'G');

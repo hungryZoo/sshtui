@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -9,7 +10,7 @@ use ratatui::style::{Color, Modifier};
 use tempfile::{TempDir, tempdir};
 use unicode_width::UnicodeWidthStr;
 
-use super::{ColorMode, HitMap, Theme, render};
+use super::{ColorMode, HitMap, Hover, HoverFrame, HoverKey, Theme, render};
 use crate::app::{App, Backend, ClickTarget, FormField, Mode};
 use crate::config::{self, ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, PickOutcome};
@@ -153,10 +154,20 @@ fn draw(app: &App<FakeBackend>, width: u16, height: u16) -> TestBackend {
 }
 
 fn draw_with_hits(app: &App<FakeBackend>, width: u16, height: u16) -> (TestBackend, HitMap) {
+    draw_with_style(app, width, height, ColorMode::TrueColor, None)
+}
+
+fn draw_with_style(
+    app: &App<FakeBackend>,
+    width: u16,
+    height: u16,
+    mode: ColorMode,
+    hover: HoverFrame<'_>,
+) -> (TestBackend, HitMap) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut hits = HitMap::default();
     terminal
-        .draw(|frame| hits = render(frame, app, &Theme::new(ColorMode::TrueColor)))
+        .draw(|frame| hits = render(frame, app, &Theme::new(mode), hover))
         .unwrap();
     (terminal.backend().clone(), hits)
 }
@@ -202,7 +213,7 @@ fn list_shows_hosts_selection_effective_values_and_source() {
             "Source     ~/.ssh/config:14",
             "enter runs",
             "$ ssh prod-web-1",
-            " enter  connect   n new   e edit   d delete   / filter   r reload   q quit",
+            " enter  connect   n new   e edit   d delete   / filter   r reload   esc quit",
         ],
     );
     assert_eq!(view.buffer()[(57, 5)].modifier, Modifier::BOLD);
@@ -223,6 +234,9 @@ const INPUT: Color = Color::Rgb(32, 36, 44);
 const INPUT_FOCUS: Color = Color::Rgb(43, 49, 59);
 const INPUT_DIM: Color = Color::Rgb(27, 30, 36);
 const ROW: Color = Color::Rgb(38, 43, 52);
+const HOVER_ROW: Color = Color::Rgb(30, 33, 40);
+const HOVER_SELECTED: Color = Color::Rgb(46, 52, 63);
+const HOVER_ACCENT: Color = Color::Rgb(155, 229, 214);
 const DEL_BG: Color = Color::Rgb(58, 34, 38);
 const ADD_BG: Color = Color::Rgb(31, 51, 38);
 
@@ -942,7 +956,7 @@ fn update_notice_appears_only_with_a_plan() {
     let rows = screen(&view);
     assert!(rows[1].starts_with("  sshtui  3 hosts"));
     assert!(rows[1].ends_with(notice));
-    assert!(rows[26].ends_with("r reload   q quit"));
+    assert!(rows[26].ends_with("r reload   esc quit"));
 
     let start = 98 - notice.len() as u16;
     let buffer = view.buffer();
@@ -1281,6 +1295,7 @@ fn popup_over_fill(app: &App<FakeBackend>, fill: &str) -> TestBackend {
                     body,
                     &theme,
                     &mut hits,
+                    None,
                 ),
                 Mode::Notice(state) => {
                     super::overlays::notice(frame, state, body, &theme, &mut hits)
@@ -1463,7 +1478,7 @@ fn color_mode_controls_background_input_underline_and_badges() {
     let ansi = Theme::new(ColorMode::Ansi);
     terminal
         .draw(|frame| {
-            render(frame, &app, &ansi);
+            render(frame, &app, &ansi, None);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
@@ -1481,7 +1496,7 @@ fn color_mode_controls_background_input_underline_and_badges() {
     let app = mockup_list();
     terminal
         .draw(|frame| {
-            render(frame, &app, &ansi);
+            render(frame, &app, &ansi, None);
         })
         .unwrap();
     let cell = &terminal.backend().buffer()[(4, 6)];
@@ -1549,7 +1564,7 @@ fn list_key_hints_register_whole_pairs_and_leave_gaps_unmapped() {
         ("d delete", KeyCode::Char('d')),
         ("/ filter", KeyCode::Char('/')),
         ("r reload", KeyCode::Char('r')),
-        ("q quit", KeyCode::Char('q')),
+        ("esc quit", KeyCode::Esc),
     ] {
         assert_text_hit(&view, &hits, text, Some(ClickTarget::Key(code)));
     }
@@ -1559,6 +1574,24 @@ fn list_key_hints_register_whole_pairs_and_leave_gaps_unmapped() {
     assert_eq!(hits.hit(14, 11), Some(&ClickTarget::Key(KeyCode::Enter)));
     assert_eq!(hits.hit(17, 11), None);
     assert_eq!(screen(&view)[11], " enter  connect");
+}
+
+#[test]
+fn escape_is_the_last_list_hint_and_reflects_an_applied_filter() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    let escape = Some(ClickTarget::Key(KeyCode::Esc));
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    assert!(screen(&view)[26].ends_with("esc quit"));
+    assert!(!screen(&view)[26].contains("q quit"));
+    assert_text_hit(&view, &hits, "esc quit", escape.clone());
+
+    press(&mut app, KeyCode::Char('/'));
+    app.handle_paste("web");
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.is_filtering());
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    assert!(screen(&view)[26].ends_with("esc clear filter"));
+    assert_text_hit(&view, &hits, "esc clear filter", escape);
 }
 
 #[test]
@@ -1809,6 +1842,288 @@ fn every_hit_region_is_nonempty_and_within_small_frames() {
                     "{target:?} outside {frame:?}"
                 );
             }
+        }
+    }
+}
+
+fn fully_hovered(app: &App<FakeBackend>, key: HoverKey) -> TestBackend {
+    let start = Instant::now();
+    let mut hover = Hover::default();
+    hover.set(Some(key), start);
+    draw_with_style(
+        app,
+        100,
+        28,
+        ColorMode::TrueColor,
+        Some((&hover, start + Hover::DURATION)),
+    )
+    .0
+}
+
+#[test]
+fn unselected_host_hover_interpolates_over_only_the_target_row() {
+    let app = mockup_list();
+    let base = draw(&app, 100, 28);
+    let start = Instant::now();
+    let mut hover = Hover::default();
+    hover.set(Some(HoverKey::HostRow(0)), start);
+    let (initial, initial_hits) =
+        draw_with_style(&app, 100, 28, ColorMode::TrueColor, Some((&hover, start)));
+    assert_eq!(base.buffer(), initial.buffer());
+    let (middle, middle_hits) = draw_with_style(
+        &app,
+        100,
+        28,
+        ColorMode::TrueColor,
+        Some((&hover, start + Hover::DURATION / 3)),
+    );
+    let (full, full_hits) = draw_with_style(
+        &app,
+        100,
+        28,
+        ColorMode::TrueColor,
+        Some((&hover, start + Hover::DURATION)),
+    );
+    assert_eq!(initial_hits, middle_hits);
+    assert_eq!(initial_hits, full_hits);
+
+    for y in 0..28 {
+        for x in 0..100 {
+            let cell = (x, y);
+            if y == 5 && (2..54).contains(&x) {
+                assert_eq!(middle.buffer()[cell].bg, Color::Rgb(27, 30, 36));
+                assert_eq!(full.buffer()[cell].bg, HOVER_ROW);
+            } else {
+                assert_eq!(base.buffer()[cell], middle.buffer()[cell]);
+                assert_eq!(base.buffer()[cell], full.buffer()[cell]);
+            }
+        }
+    }
+    assert_eq!(base.buffer()[(20, 5)].fg, MUTED);
+    assert_eq!(full.buffer()[(20, 5)].fg, TEXT);
+}
+
+#[test]
+fn selected_host_hover_brightens_the_entire_selected_row() {
+    let app = mockup_list();
+    let view = fully_hovered(&app, HoverKey::HostRow(1));
+    for x in 2..54 {
+        assert_eq!(view.buffer()[(x, 6)].bg, HOVER_SELECTED);
+    }
+    assert_eq!(view.buffer()[(4, 6)].modifier, Modifier::BOLD);
+    assert_eq!(view.buffer()[(20, 6)].fg, TEXT);
+}
+
+#[test]
+fn hovering_the_inactive_filter_uses_the_focused_input_background() {
+    let app = mockup_list();
+    let view = fully_hovered(&app, HoverKey::Key(KeyCode::Char('/')));
+    for x in 2..98 {
+        assert_eq!(view.buffer()[(x, 3)].bg, INPUT_FOCUS);
+    }
+    assert_eq!(view.buffer()[(3, 3)].fg, MUTED);
+}
+
+#[test]
+fn hovering_an_unfocused_editable_field_brightens_its_label_and_input() {
+    let app = mockup_new_form();
+    let view = fully_hovered(&app, HoverKey::FormField(FormField::Port));
+    assert_eq!(view.buffer()[(4, 10)].fg, TEXT);
+    for x in 15..51 {
+        assert_eq!(view.buffer()[(x, 10)].bg, INPUT_FOCUS);
+    }
+}
+
+#[test]
+fn hovering_a_read_only_field_brightens_its_label_only() {
+    let mut app = App::new(FakeBackend::new(
+        "Host web\n  IdentityFile ~/one\n  IdentityFile ~/two\n",
+    ));
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.form().unwrap().is_read_only(FormField::KeyFile));
+    assert_ne!(app.form().unwrap().focus(), FormField::KeyFile);
+    let base = draw(&app, 100, 28);
+    let view = fully_hovered(&app, HoverKey::FormField(FormField::KeyFile));
+    assert_eq!(view.buffer()[(4, 12)].fg, TEXT);
+    for x in 15..98 {
+        assert_eq!(view.buffer()[(x, 12)], base.buffer()[(x, 12)]);
+    }
+}
+
+#[test]
+fn hovering_an_ordinary_hint_brightens_its_whole_pair_and_description() {
+    let app = mockup_list();
+    let view = fully_hovered(&app, HoverKey::Key(KeyCode::Char('n')));
+    for x in 20..25 {
+        assert_eq!(view.buffer()[(x, 26)].bg, ROW);
+    }
+    assert_eq!(view.buffer()[(19, 26)].bg, BG);
+    assert_eq!(view.buffer()[(25, 26)].bg, BG);
+    assert_eq!(view.buffer()[(22, 26)].fg, TEXT);
+}
+
+#[test]
+fn hovering_the_primary_action_brightens_its_badge() {
+    let app = mockup_list();
+    let view = fully_hovered(&app, HoverKey::Key(KeyCode::Enter));
+    for x in 2..9 {
+        assert_eq!(view.buffer()[(x, 26)].bg, HOVER_ACCENT);
+    }
+    assert_eq!(view.buffer()[(10, 26)].bg, BG);
+}
+
+#[test]
+fn hovering_key_picker_rows_brightens_selected_and_unselected_backgrounds() {
+    let mut app = App::new(FakeBackend::new("").with_keys());
+    press(&mut app, KeyCode::F(2));
+    let (base, hits) = draw_with_hits(&app, 100, 28);
+    for (index, color) in [(0, HOVER_SELECTED), (1, HOVER_ROW)] {
+        let view = fully_hovered(&app, HoverKey::KeyRow(index));
+        let (area, _) = hits
+            .regions
+            .iter()
+            .find(|(_, target)| *target == ClickTarget::KeyRow(index))
+            .unwrap();
+        for x in area.left()..area.right() {
+            assert_eq!(view.buffer()[(x, area.y)].bg, color);
+        }
+        let other_y = if index == 0 { area.y + 1 } else { area.y - 1 };
+        assert_eq!(
+            view.buffer()[(area.x, other_y)],
+            base.buffer()[(area.x, other_y)]
+        );
+    }
+}
+
+#[test]
+fn hovering_the_update_notice_brightens_its_background() {
+    let app = update_fixture(InstallMethod::Brew);
+    let view = fully_hovered(&app, HoverKey::UpdateNotice);
+    for x in (98 - "update available u".len() as u16)..98 {
+        assert_eq!(view.buffer()[(x, 1)].bg, ROW);
+        assert_eq!(view.buffer()[(x, 1)].fg, WARN);
+    }
+    assert_eq!(view.buffer()[(78, 1)].bg, BG);
+}
+
+#[test]
+fn focused_inputs_and_disabled_badges_keep_their_original_styles() {
+    let mut list = mockup_list();
+    press(&mut list, KeyCode::Char('/'));
+    list.handle_paste("prod");
+    let form = mockup_new_form();
+    let invalid = App::new(FakeBackend::new(""));
+    assert!(invalid.form_first_error().is_some());
+    for (app, key) in [
+        (&list, HoverKey::Key(KeyCode::Char('/'))),
+        (&form, HoverKey::FormField(form.form().unwrap().focus())),
+        (&invalid, HoverKey::Key(KeyCode::Enter)),
+    ] {
+        assert_eq!(
+            fully_hovered(app, key).buffer(),
+            draw(app, 100, 28).buffer()
+        );
+    }
+}
+
+#[test]
+fn ansi_host_hover_underlines_the_name_at_the_threshold_without_changing_backgrounds() {
+    let app = mockup_list();
+    let start = Instant::now();
+    let mut hover = Hover::default();
+    let key = HoverKey::HostRow(0);
+    hover.set(Some(key), start);
+    let forty_percent = start + Hover::DURATION.mul_f32(1.0 - 0.6_f32.cbrt());
+    assert!((hover.intensity(&key, forty_percent) - 0.4).abs() < 0.001);
+    let (base, _) = draw_with_style(&app, 100, 28, ColorMode::Ansi, None);
+    let (faint, _) = draw_with_style(
+        &app,
+        100,
+        28,
+        ColorMode::Ansi,
+        Some((&hover, forty_percent)),
+    );
+    let (full, _) = draw_with_style(
+        &app,
+        100,
+        28,
+        ColorMode::Ansi,
+        Some((&hover, start + Hover::DURATION)),
+    );
+    assert_eq!(faint.buffer(), base.buffer());
+    for y in 0..28 {
+        for x in 0..100 {
+            let original = &base.buffer()[(x, y)];
+            let hovered = &full.buffer()[(x, y)];
+            if y == 5 && (4..11).contains(&x) {
+                assert!(hovered.modifier.contains(Modifier::UNDERLINED));
+                assert_eq!(hovered.bg, original.bg);
+            } else {
+                assert_eq!(hovered, original);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_popup_suppresses_hover_on_the_backdrop() {
+    let mut app = update_fixture(InstallMethod::Brew);
+    press(&mut app, KeyCode::Char('u'));
+    let (base, hits) = draw_with_hits(&app, 100, 28);
+    assert_eq!(hits.hit(4, 5), Some(&ClickTarget::Outside));
+    assert_eq!(
+        fully_hovered(&app, HoverKey::HostRow(0)).buffer(),
+        base.buffer()
+    );
+    assert_eq!(
+        fully_hovered(&app, HoverKey::UpdateNotice).buffer(),
+        base.buffer()
+    );
+}
+
+#[test]
+fn hover_renders_at_small_sizes_in_each_screen_mode() {
+    let mut picker = App::new(FakeBackend::new("").with_keys());
+    press(&mut picker, KeyCode::F(2));
+    let mut update = update_fixture(InstallMethod::Brew);
+    press(&mut update, KeyCode::Char('u'));
+    let start = Instant::now();
+    let mut hover = Hover::default();
+    let step = Duration::from_millis(4);
+    for (index, key) in [
+        HoverKey::Key(KeyCode::Char('/')),
+        HoverKey::HostRow(0),
+        HoverKey::FormField(FormField::Address),
+        HoverKey::KeyRow(0),
+        HoverKey::Key(KeyCode::Enter),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        hover.set(Some(key), start + step * index as u32);
+    }
+    let apps = [
+        mockup_list(),
+        mockup_new_form(),
+        edit_confirmation(),
+        picker,
+        connection_notice(),
+        update,
+    ];
+    for (width, height) in [(1, 1), (5, 2), (20, 5)] {
+        for app in &apps {
+            let (view, hover_hits) = draw_with_style(
+                app,
+                width,
+                height,
+                ColorMode::TrueColor,
+                Some((&hover, start + step * 5)),
+            );
+            assert_eq!(
+                view.buffer().area,
+                ratatui::layout::Rect::new(0, 0, width, height)
+            );
+            assert_eq!(hover_hits, draw_with_hits(app, width, height).1);
         }
     }
 }

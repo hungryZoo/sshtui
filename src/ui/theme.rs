@@ -5,6 +5,10 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::app::StatusLevel;
 
 pub(super) const PLAIN: Style = Style::new();
+pub(super) const ROW: Color = Color::Rgb(38, 43, 52);
+pub(super) const HOVER_ROW: Color = Color::Rgb(30, 33, 40);
+pub(super) const HOVER_SELECTED: Color = Color::Rgb(46, 52, 63);
+pub(super) const HOVER_ACCENT: Color = Color::Rgb(155, 229, 214);
 
 /// The color capabilities of the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +70,7 @@ impl Theme {
                 PLAIN.bg(Color::Rgb(32, 36, 44)),
                 PLAIN.bg(Color::Rgb(43, 49, 59)),
                 PLAIN.bg(Color::Rgb(27, 30, 36)),
-                PLAIN.bg(Color::Rgb(38, 43, 52)),
+                PLAIN.bg(ROW),
                 PLAIN.bg(Color::Rgb(58, 34, 38)),
                 PLAIN.bg(Color::Rgb(31, 51, 38)),
                 bg,
@@ -138,6 +142,50 @@ impl Theme {
         }
     }
 
+    pub(super) fn hover_input(&self, focused: bool, intensity: f32) -> Style {
+        let style = self.input(focused);
+        match self.focus.bg {
+            Some(color) if !focused => self.hover_background(style, color, intensity),
+            _ => style,
+        }
+    }
+
+    pub(super) fn hover_row(&self, selected: bool, intensity: f32) -> Style {
+        let (style, color) = if selected {
+            (self.row, HOVER_SELECTED)
+        } else {
+            (PLAIN, HOVER_ROW)
+        };
+        self.hover_background(style, color, intensity)
+    }
+
+    pub(super) fn hover_background(&self, style: Style, to: Color, intensity: f32) -> Style {
+        if self.mode == ColorMode::TrueColor && intensity > 0.0 {
+            let from = style.bg.or(self.base.bg).unwrap_or(Color::Reset);
+            style.bg(mix(from, to, intensity))
+        } else {
+            style
+        }
+    }
+
+    pub(super) fn hover_muted(&self, intensity: f32) -> Style {
+        if self.mode == ColorMode::TrueColor && intensity > 0.0 {
+            let from = self.muted.fg.unwrap_or(Color::Reset);
+            let to = self.text.fg.unwrap_or(Color::Reset);
+            self.muted.fg(mix(from, to, intensity))
+        } else {
+            self.muted
+        }
+    }
+
+    pub(super) fn hover_text(&self, style: Style, intensity: f32) -> Style {
+        if self.mode == ColorMode::Ansi && intensity >= 0.5 {
+            style.add_modifier(Modifier::UNDERLINED)
+        } else {
+            style
+        }
+    }
+
     pub(super) fn selected(&self, style: Style, selected: bool) -> Style {
         if selected && self.mode == ColorMode::Ansi && !self.dim {
             style.patch(self.row)
@@ -165,4 +213,47 @@ impl Theme {
 
 pub(super) fn bold(style: Style) -> Style {
     style.add_modifier(Modifier::BOLD)
+}
+
+fn mix(from: Color, to: Color, t: f32) -> Color {
+    match (from, to) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let channel = |a: u8, b: u8| {
+                let a = f32::from(a);
+                (a + (f32::from(b) - a) * t).round() as u8
+            };
+            Color::Rgb(channel(r1, r2), channel(g1, g2), channel(b1, b2))
+        }
+        _ if t >= 0.5 => to,
+        _ => from,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mix_interpolates_and_rounds_each_rgb_channel() {
+        let from = Color::Rgb(0, 40, 71);
+        let to = Color::Rgb(11, 42, 60);
+        assert_eq!(mix(from, to, 0.0), from);
+        assert_eq!(mix(from, to, 0.5), Color::Rgb(6, 41, 66));
+        assert_eq!(mix(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn mix_switches_at_half_strength_if_either_color_is_not_rgb() {
+        let rgb = Color::Rgb(0, 35, 255);
+        for (from, to) in [
+            (Color::Cyan, rgb),
+            (rgb, Color::Cyan),
+            (Color::Cyan, Color::Red),
+        ] {
+            assert_eq!(mix(from, to, 0.0), from);
+            assert_eq!(mix(from, to, 0.49), from);
+            assert_eq!(mix(from, to, 0.5), to);
+            assert_eq!(mix(from, to, 1.0), to);
+        }
+    }
 }

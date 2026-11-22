@@ -14,7 +14,10 @@ use super::layout::{
     visible_rows,
 };
 use super::theme::bold;
-use super::{HitMap, KeyHint, Theme, command_lines, labeled_lines, styled_wrapped};
+use super::{
+    HitMap, HoverFrame, HoverKey, KeyHint, Theme, command_lines, intensity, labeled_lines,
+    styled_wrapped,
+};
 
 pub(super) fn confirm_help(state: &ConfirmState) -> &'static [KeyHint] {
     if state.is_delete() {
@@ -145,6 +148,7 @@ pub(super) fn key_picker(
     body: Rect,
     theme: &Theme,
     hits: &mut HitMap,
+    hover: HoverFrame<'_>,
 ) -> &'static [KeyHint] {
     let count = state.keys().len();
     let directory = paths.abbreviate_home(paths.ssh_dir());
@@ -159,8 +163,11 @@ pub(super) fn key_picker(
     for (index, rect) in visible_rows(below(area, 2), count, Some(selection)) {
         let key = &state.keys()[index];
         let selected = index == selection;
+        let t = intensity(hover, HoverKey::KeyRow(index));
+        frame
+            .buffer_mut()
+            .set_style(rect, theme.hover_row(selected, t));
         if selected {
-            frame.buffer_mut().set_style(rect, theme.row);
             put(
                 frame,
                 left(rect, 1),
@@ -175,7 +182,12 @@ pub(super) fn key_picker(
         } else {
             theme.text
         };
-        put(frame, content, &path, theme.selected(style, selected));
+        put(
+            frame,
+            content,
+            &path,
+            theme.hover_text(theme.selected(style, selected), t),
+        );
         if let Some(public) = &key.public {
             let metadata = match &public.comment {
                 Some(comment) if !comment.is_empty() => format!("{} {comment}", public.key_type),

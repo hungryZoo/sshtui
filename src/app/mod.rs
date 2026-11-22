@@ -443,8 +443,10 @@ impl<B: Backend> App<B> {
                 }
                 return Mode::List;
             }
-            KeyCode::Esc => self.list.clear_filter(&self.config),
-            KeyCode::Char('q') => self.exit = Some(Exit::Quit),
+            KeyCode::Esc if !self.list.filter().value().is_empty() => {
+                self.list.clear_filter(&self.config);
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.exit = Some(Exit::Quit),
             KeyCode::Char('u') => {
                 return self
                     .update_plan
