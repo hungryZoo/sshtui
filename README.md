@@ -54,15 +54,22 @@ cargo install --path .
    - [쓰기 공통 규칙](#쓰기-공통-규칙)
    - [닉네임 규칙](#닉네임-규칙)
    - [알려진 제한](#알려진-제한)
-5. [네이티브 파일 다이얼로그](#5-네이티브-파일-다이얼로그)
+5. [업데이트](#5-업데이트)
+   - [확인 방식](#확인-방식)
+   - [캐시 파일](#캐시-파일)
+   - [적용 흐름](#적용-흐름)
+   - [설치 방식별 명령](#설치-방식별-명령)
+   - [전제 조건](#전제-조건)
+6. [네이티브 파일 다이얼로그](#6-네이티브-파일-다이얼로그)
    - [플랫폼별 동작](#플랫폼별-동작)
    - [공통 동작](#공통-동작)
    - [비활성 조건](#비활성-조건)
-6. [검증 상태](#6-검증-상태)
+7. [검증 상태](#7-검증-상태)
    - [검증 결과](#검증-결과)
-7. [수동 확인 절차](#7-수동-확인-절차)
+8. [수동 확인 절차](#8-수동-확인-절차)
    - [임시 SSH 디렉터리 확인](#임시-ssh-디렉터리-확인)
-8. [개발](#8-개발)
+   - [업데이트 확인](#업데이트-확인)
+9. [개발](#9-개발)
    - [모듈 구성](#모듈-구성)
    - [검증 명령](#검증-명령)
    - [작업 방식](#작업-방식)
@@ -131,6 +138,8 @@ sshtui
 |---|---|
 | `-h`, `--help` | 도움말 출력 |
 | `-V`, `--version` | 버전 출력 |
+| `--check-update` | 즉시 새 버전 확인. 종료 코드 `0` 최신, `10` 업데이트 있음, `11` 접속 불가 |
+| `--update` | 즉시 확인 후 새 버전 적용. 종료 코드 `0` 완료 또는 최신, `1` 실패 또는 설치 방식 불명, `11` 접속 불가 |
 
 모든 화면에서 `Ctrl+C`로 종료.
 
@@ -150,7 +159,10 @@ sshtui
 | `↑`, `↓` (필터 입력 중) | 필터 결과에서 선택 이동 |
 | `Enter` (필터 입력 중) | 필터 유지, 목록 키로 복귀 |
 | `Esc` | 필터 초기화 |
+| `u` | 새 버전이 있을 때만 `Update` 화면 열기 |
 | `r` / `q` | 설정 다시 읽기 / 종료 |
+
+캐시에 새 버전이 있고 표시 공간이 충분하면 제목 줄 오른쪽에 `v<버전> available (u: update)` 표시.
 
 ### 접속 폼
 
@@ -229,6 +241,7 @@ sshtui
 | 이름 | 동작 |
 |---|---|
 | `SSHTUI_SSH_DIR` | SSH 디렉터리 변경. 미설정 또는 빈 값이면 `~/.ssh` 사용. 상대 경로는 현재 작업 디렉터리 기준 |
+| `SSHTUI_NO_UPDATE_CHECK` | 비어 있지 않고 `0`이 아닌 값이면 자동 확인과 알림 비활성화. `--check-update`와 `--update`에는 영향 없음 |
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
@@ -281,7 +294,65 @@ sshtui
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 5. 네이티브 파일 다이얼로그
+## 5. 업데이트
+
+### 확인 방식
+
+- 시작 시 네트워크 응답 대기 없음. 알림은 이전 실행이 남긴 캐시 기준으로만 표시.
+- 마지막 시도 후 24시간 이상 경과했거나 시도 기록이 없을 때 백그라운드 확인. 요청 전에 시도 시각을 기록하므로 오프라인이거나 즉시 종료해도 24시간에 최대 1회 시도.
+- `curl`로 `<저장소>/releases/latest`의 최종 리다이렉트 URL을 읽어 태그에서 버전 추출. GitHub API 미사용, 제한 시간 2초. `curl`이 없으면 자동 확인 없이 정상 실행.
+- `MAJOR.MINOR.PATCH`의 세 정수를 순서대로 비교, `v` 접두사 허용. `-rc1` 등이 붙은 형식은 새 버전으로 판정하지 않음.
+- 자동 확인은 하루 최대 1회 `github.com`에 요청. `SSHTUI_NO_UPDATE_CHECK=1`로 자동 확인과 알림 비활성화.
+
+### 캐시 파일
+
+| 플랫폼 | 경로 |
+|---|---|
+| Linux | `~/.cache/sshtui/update-check`. `$XDG_CACHE_HOME`이 지정된 경우 `$XDG_CACHE_HOME/sshtui/update-check` 우선 |
+| macOS | `~/Library/Caches/sshtui/update-check` |
+| Windows | `%LOCALAPPDATA%\sshtui\update-check` |
+
+- 파일 형식은 `checked_at=<유닉스 초>`와 `latest=<버전>` 두 줄. 확인된 버전이 없으면 `latest=`로 기록.
+- 동시 확인 제어용 `update-check.lock`은 캐시와 같은 디렉터리에 생성.
+- `checked_at=0`으로 바꾸면 자동 확인이 활성화된 다음 실행에서 다시 확인.
+
+### 적용 흐름
+
+1. 호스트 목록에서 `u`로 `Update` 화면 열기. 현재 버전(`Current`), 최신 버전(`Latest`), 설치 방식(`Installed via`), 실행할 명령(`Command:`) 확인.
+2. 실행할 명령이 있으면 `Enter`로 TUI 종료와 터미널 복원 후 명령 실행. 복원된 터미널에서 `sudo` 프롬프트 입력과 설치 출력 확인 가능.
+3. 성공 시 `Start sshtui again to use the new version.` 안내 후 종료. 명령 실행 전 `Esc`로 취소하고 목록으로 복귀 가능.
+
+### 설치 방식별 명령
+
+| 설치 방식 | 판정 근거 | 실행 명령 |
+|---|---|---|
+| Homebrew | 실행 파일 경로에 `/Cellar/`, `/homebrew/`, `/linuxbrew/` 중 하나 포함 | `brew upgrade sshtui` |
+| cargo | `~/.cargo/bin/` 하위 | `cargo install --git <저장소> --tag v<버전> --locked` |
+| install.sh 또는 수동 복사 | 그 외 홈 디렉터리 하위 | `main` 브랜치의 `install.sh`를 임시 디렉터리에 내려받은 뒤 `sh <tmp>/install.sh --bin-dir <원래 디렉터리>` |
+| .deb | `/usr/bin/` 또는 `/usr/local/bin/` 하위, `/var/lib/dpkg/status` 파일 존재, 지원 아키텍처 | 릴리스 에셋을 임시 디렉터리에 내려받은 뒤 `sudo dpkg -i <tmp>/sshtui_<arch>.deb` |
+| .rpm | 같은 경로, .deb 판정 조건 불충족, `/var/lib/rpm` 디렉터리 존재, 지원 아키텍처 | `sudo rpm -U <저장소>/releases/latest/download/sshtui-<arch>.rpm` |
+| 불명 | 위 조건에 해당하지 않거나 실행 파일 경로 조회 실패 | 실행 없음. `Download:`에 릴리스 URL 표시 |
+
+- Windows는 `~/.cargo/bin` 하위면 cargo, 그 외는 불명으로 판정.
+- 패키지 아키텍처 매핑은 `.deb`의 경우 `x86_64` → `amd64`, `aarch64` → `arm64`, `arm` → `armhf`. `.rpm`은 `x86_64`와 `aarch64` 지원.
+- 각 단계의 프로그램과 인자를 셸의 명령 해석 없이 직접 전달. 직접 내려받는 파일은 실행마다 새로 만드는 임시 디렉터리에 저장.
+
+### 전제 조건
+
+아래 배포 구성 요소는 아직 미준비 상태. 저장소와 릴리스가 준비되기 전 확인 결과는 접속 불가. 설치 방식에 필요한 배포 요소가 준비되기 전 해당 업그레이드 명령은 실패.
+
+| 항목 | 필요 조건 |
+|---|---|
+| GitHub 저장소와 릴리스 | `hungryZoo/sshtui` 저장소와 `v<버전>` 태그의 릴리스 |
+| 설치 스크립트 | 저장소 `main` 브랜치의 `install.sh`, `--bin-dir` 옵션 지원 |
+| Homebrew formula | `sshtui` |
+| 릴리스 에셋 | 버전 없는 파일명 `sshtui_<arch>.deb`, `sshtui-<arch>.rpm` |
+
+저장소 주소의 정의 위치는 `Cargo.toml`의 `repository` 한 곳.
+
+<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
+
+## 6. 네이티브 파일 다이얼로그
 
 ### 플랫폼별 동작
 
@@ -310,16 +381,19 @@ sshtui
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 6. 검증 상태
+## 7. 검증 상태
 
 ### 검증 결과
 
 | 구분 | 항목 | 상태 |
 |---|---|---|
-| 자동 | 단위 테스트 280개(`cargo test`): config 읽기와 편집과 쓰기, 검증, ssh 인자, 비밀키 판별, 화면 상태, 렌더링 | 통과 (macOS) |
+| 자동 | 단위 테스트 314개(`cargo test`)로 확인한 config 읽기와 편집과 쓰기, 검증, ssh 인자, 비밀키 판별, 화면 상태, 렌더링, 업데이트 확인 | 통과 (macOS) |
 | 자동 | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | 통과 |
 | 자동 | `cargo check --target x86_64-pc-windows-msvc`, `--target x86_64-unknown-linux-gnu` | 통과 (타입 검사만) |
 | 수동 | 임시 ssh 디렉터리에서 목록, 새 접속 저장, 편집, 삭제, 외부 변경 감지, 불일치 알림, 1회 접속의 ssh 실행과 종료 코드 | 확인 (macOS, tmux) |
+| 수동 | 업데이트 확인 범위는 `latest=9.9.9`일 때의 알림과 `Update` 화면, 24시간 이내 캐시 유지, 오래된 캐시의 시도 시각 선기록, `SSHTUI_NO_UPDATE_CHECK`, `--check-update` 종료 코드 `11`(릴리스 없음, `curl` 없음), `Update` 화면에서 `Enter` 후 터미널 복원과 명령 실행, 실패 시 종료 코드 `1` | 확인 (macOS, tmux, 임시 HOME) |
+| 미검증 | 실제 릴리스 조회 성공과 새 버전 감지(저장소와 릴리스가 아직 없음) | 미검증 |
+| 미검증 | 설치 방식별 업그레이드 명령의 실제 성공(Homebrew, cargo, install.sh, .deb, .rpm) | 미검증 |
 | 미검증 | 네이티브 다이얼로그의 실제 표시와 숨김파일 표시(macOS, Windows, Linux) | 미검증 |
 | 미검증 | 실제 서버 접속 성공(암호, 패스프레이즈, 호스트 키 확인 흐름) | 미검증 |
 | 미검증 | Windows와 Linux에서의 실행(링크, 터미널 동작, 종료 코드 전달) | 미검증 |
@@ -327,7 +401,7 @@ sshtui
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 7. 수동 확인 절차
+## 8. 수동 확인 절차
 
 ### 임시 SSH 디렉터리 확인
 
@@ -381,9 +455,66 @@ sshtui
 10. 접속 가능한 테스트 서버의 주소와 필요한 `User`, `Port`를 `n` 폼에 입력하고 닉네임을 비운 채 `Enter`. `ssh`에서 인증한 뒤 원격 셸에서 `exit`. 다시 실행해 같은 입력에 `Nickname`으로 `live-test`를 지정하고 `Enter`로 저장 후 접속. 키 인증이 필요하면 `Key file`에 임시 디렉터리에 별도로 준비한 테스트 키를 지정. 두 접속이 종료된 뒤 로컬 터미널에서 입력 에코와 커서가 정상인지 확인.
 11. `ssh -F "$ssh_dir/config" live-test` 실행. 같은 서버에 접속하고 원격 셸에서 `exit`로 종료할 수 있는지 확인.
 
+### 업데이트 확인
+
+위 절차에서 만든 임시 SSH 디렉터리(`ssh_dir`) 재사용. 아래 Bash 명령은 같은 셸에서 순서대로 실행하며, 각 TUI는 확인 후 `q`로 종료.
+
+1. 임시 `HOME`과 캐시 경로 준비. 먼저 기존 Bash에서 `export ssh_dir` 실행 후 `bash`로 하위 셸 시작. 아래 명령의 `cache`는 운영체제에 맞는 경로 사용. Linux의 실제 캐시 경로를 사용하지 않도록 하위 셸에서 `XDG_CACHE_HOME` 해제.
+
+   ```bash
+   sshtui_bin="$(type -P sshtui)"
+   export HOME="$(mktemp -d)"
+   export SSHTUI_SSH_DIR="$ssh_dir"
+   unset XDG_CACHE_HOME SSHTUI_NO_UPDATE_CHECK
+   cache="$HOME/Library/Caches/sshtui/update-check"  # macOS
+   # Linux: cache="$HOME/.cache/sshtui/update-check"
+   mkdir -p "${cache%/*}" "$HOME/no-curl"
+   ```
+
+2. 알림 확인. 제목 줄의 `v9.9.9 available (u: update)`와 `u`로 열린 `Update` 화면을 확인하고 `Esc`로 복귀. 종료 후 캐시의 두 값이 그대로인지 확인.
+
+   ```bash
+   printf 'checked_at=%s\nlatest=9.9.9\n' "$(date +%s)" > "$cache"
+   "$sshtui_bin"
+   cat "$cache"
+   ```
+
+3. 백그라운드 확인. 오래된 기록으로 실행한 뒤 바로 종료. `checked_at`이 실행 시점의 유닉스 초로 바뀌었는지 확인.
+
+   ```bash
+   printf 'checked_at=1\nlatest=9.9.9\n' > "$cache"
+   "$sshtui_bin"
+   cat "$cache"
+   ```
+
+4. 자동 확인 비활성화. 오래된 캐시를 다시 준비한 뒤 실행. 제목 줄에 알림이 없고 종료 후 캐시의 두 값이 그대로인지 확인.
+
+   ```bash
+   printf 'checked_at=1\nlatest=9.9.9\n' > "$cache"
+   SSHTUI_NO_UPDATE_CHECK=1 "$sshtui_bin"
+   cat "$cache"
+   ```
+
+5. 즉시 확인. `sshtui --check-update; echo $?`와 같은 실행으로 종료 코드 확인. 릴리스가 없으면 `11`.
+
+   ```bash
+   "$sshtui_bin" --check-update; echo $?
+   ```
+
+6. 접속 불가 확인. 첫 명령은 빈 디렉터리만 `PATH`에 지정해 `curl`을 찾을 수 없게 하고, 두 번째 명령은 접속할 수 없는 로컬 프록시를 지정. `curl`의 소문자 변수 우선순위를 고려해 두 프록시 변수를 모두 설정하고 프록시 예외는 해제. 두 실행 모두 종료 코드 `11` 확인 후 `exit`로 하위 셸 종료.
+
+   ```bash
+   PATH="$HOME/no-curl" "$sshtui_bin" --check-update; echo $?
+   env -u no_proxy -u NO_PROXY https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 \
+     "$sshtui_bin" --check-update; echo $?
+   exit
+   ```
+
+임시 `HOME`을 사용하면 홈 경로가 필요한 설치 방식 판정도 해당 `HOME` 기준.
+
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 8. 개발
+## 9. 개발
 
 ### 모듈 구성
 
@@ -399,6 +530,7 @@ sshtui
 | `src/keys.rs` | 키 파일 탐색과 비밀키 헤더 판별 |
 | `src/paths.rs` | SSH 디렉터리와 설정 경로 결정 |
 | `src/validate.rs` | 폼 입력 검증 |
+| `src/update.rs` | 새 버전 확인, 캐시, 설치 방식 판정, 업그레이드 명령 |
 | `src/system.rs` | 파일 시스템, `ssh`, 파일 다이얼로그 연동 |
 
 ### 검증 명령
