@@ -2,28 +2,54 @@
 
 # `sshtui`
 
-**터미널에서 SSH 호스트를 관리하고 접속하는 TUI**
+**터미널에서 SSH 호스트를 관리하는 TUI**<br/>
+OpenSSH 설정에서 호스트를 읽고 선택한 호스트에 시스템 `ssh`로 접속.
 
-OpenSSH 설정 파일과 시스템 `ssh`를 사용하는 Rust CLI
+[![Release](https://img.shields.io/github/v/release/hungryZoo/sshtui?style=flat-square&color=cba6f7&labelColor=1e1e2e)](https://github.com/hungryZoo/sshtui/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-89b4fa?style=flat-square&labelColor=1e1e2e)](LICENSE)
+[![Built with Rust and ratatui](https://img.shields.io/badge/built%20with-Rust%20%C2%B7%20ratatui-fab387?style=flat-square&logo=rust&logoColor=white&labelColor=1e1e2e)](https://github.com/ratatui-org/ratatui)
 
-![built with Rust and ratatui](https://img.shields.io/badge/built%20with-Rust%20%2B%20ratatui-orange?logo=rust)
+<br/>
 
 ```bash
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.sh | sh
 ```
 
-![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
-![Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Windows](https://img.shields.io/badge/platform-Windows-lightgrey)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%C2%B7%20Intel-f5c2e7?style=flat-square&logo=apple&logoColor=white&labelColor=1e1e2e)](#macos)
+[![Linux](https://img.shields.io/badge/Linux-x86__64%20%C2%B7%20ARM64%20%C2%B7%20ARMv7%20%C2%B7%20ARMv6-94e2d5?style=flat-square&logo=linux&logoColor=white&labelColor=1e1e2e)](#linux)<br/>
+[![Windows](https://img.shields.io/badge/Windows-x64%20%C2%B7%20ARM64-74c7ec?style=flat-square&labelColor=1e1e2e)](#windows)
+[![Debian / Ubuntu](https://img.shields.io/badge/Debian%20%C2%B7%20Ubuntu-.deb%20%20amd64%20%C2%B7%20arm64%20%C2%B7%20armhf-f9e2af?style=flat-square&logo=debian&logoColor=white&labelColor=1e1e2e)](#debian과-ubuntu-deb)<br/>
+[![Fedora / RHEL](https://img.shields.io/badge/Fedora%20%C2%B7%20RHEL-.rpm%20%20x86__64%20%C2%B7%20aarch64-a6e3a1?style=flat-square&logo=fedora&logoColor=white&labelColor=1e1e2e)](#fedora와-rhel-계열-rpm)
+[![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-1%20%C2%B7%202%20%C2%B7%203%20%C2%B7%204%20%C2%B7%205%20%C2%B7%20Zero-f38ba8?style=flat-square&logo=raspberrypi&logoColor=white&labelColor=1e1e2e)](#raspberry-pi)
 
 </div>
 
+```text
+  sshtui  3 hosts                                                                  2 suggestions i
+
+   / filter hosts
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  › web             deploy@example.com                │  web
+    db              10.0.0.5                          │  deploy@example.com
+    bastion         ops@bastion.example.com           │
+    + New connection                                  │  User       deploy
+                                                      │  Address    example.com
+                                                      │  Port       22
+                                                      │  Key file   ~/.ssh/id_ed25519
+                                                      │  Source     ~/.ssh/config:1
+                                                      │
+                                                      │  enter runs
+                                                      │  $ ssh web
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+   enter  connect   e edit   d delete   x forget(known_host)   / filter   r reload   esc quit
+```
+
 ---
 
-`sshtui`를 실행하면 SSH 설정에서 읽은 호스트 목록 표시.  
-저장된 호스트와 셸 히스토리 후보가 모두 없으면 `New connection` 폼으로 시작.<br>
-저장된 호스트는 목록에서 선택하여 바로 접속.  
-새 접속은 폼에서 1회 접속하거나 닉네임을 붙여 저장 후 접속.  
+`sshtui` 실행 시 SSH 설정에서 읽은 호스트 목록 표시. 후보와 표시 공간이 있으면 셸 히스토리 후보 알림 표시.<br/>
+저장된 호스트와 후보가 모두 없으면 `New connection` 폼에서 시작.<br/>
+목록에서 저장된 호스트를 선택해 접속하거나 새 접속 폼 열기.<br/>
+새 접속은 한 번만 실행하거나 닉네임을 붙여 저장 후 실행.<br/>
 접속 시 TUI를 닫고 복원된 터미널에서 시스템 `ssh` 실행.
 
 ---
@@ -35,10 +61,16 @@ cargo install --path .
    - [동작 방식](#동작-방식)
    - [범위 외 기능](#범위-외-기능)
 2. [설치](#2-설치)
-   - [요구 사항](#요구-사항)
-   - [소스 설치](#소스-설치)
-3. [사용법](#3-사용법)
-   - [실행](#실행)
+   - [설치 스크립트 (권장)](#설치-스크립트-권장)
+   - [Windows (PowerShell)](#windows-powershell)
+   - [Homebrew](#homebrew)
+   - [Linux 패키지 (.deb / .rpm)](#linux-패키지-deb--rpm)
+   - [수동 설치](#수동-설치)
+   - [소스에서 설치](#소스에서-설치)
+   - [검증하며 설치](#검증하며-설치)
+   - [업데이트와 삭제](#업데이트와-삭제)
+3. [빠른 시작](#3-빠른-시작)
+4. [사용법](#4-사용법)
    - [공통 화면 구성](#공통-화면-구성)
    - [호스트 목록](#호스트-목록)
    - [접속 폼](#접속-폼)
@@ -51,39 +83,54 @@ cargo install --path .
    - [마우스](#마우스)
    - [접속 실행](#접속-실행)
    - [입력 검증](#입력-검증)
+   - [ssh config 연동](#ssh-config-연동)
+      - [읽기](#읽기)
+      - [새 호스트 저장](#새-호스트-저장)
+      - [편집과 삭제](#편집과-삭제)
+      - [쓰기 공통 규칙](#쓰기-공통-규칙)
+      - [닉네임 규칙](#닉네임-규칙)
+      - [알려진 제한](#알려진-제한)
+   - [업데이트](#업데이트)
+      - [확인 방식](#확인-방식)
+      - [적용 흐름](#적용-흐름)
+      - [설치 방식별 명령](#설치-방식별-명령)
+      - [전제 조건](#전제-조건)
+   - [네이티브 파일 다이얼로그](#네이티브-파일-다이얼로그)
+      - [플랫폼별 동작](#플랫폼별-동작)
+      - [공통 동작](#공통-동작)
+      - [비활성 조건](#비활성-조건)
+5. [설정](#5-설정)
+   - [환경변수](#환경변수)
+   - [실행 옵션](#실행-옵션)
    - [표시 언어](#표시-언어)
    - [색](#색)
-   - [환경변수](#환경변수)
-4. [ssh config 연동](#4-ssh-config-연동)
-   - [읽기](#읽기)
-   - [새 호스트 저장](#새-호스트-저장)
-   - [편집과 삭제](#편집과-삭제)
-   - [쓰기 공통 규칙](#쓰기-공통-규칙)
-   - [닉네임 규칙](#닉네임-규칙)
-   - [알려진 제한](#알려진-제한)
-5. [업데이트](#5-업데이트)
-   - [확인 방식](#확인-방식)
-   - [캐시 파일](#캐시-파일)
-   - [적용 흐름](#적용-흐름)
-   - [설치 방식별 명령](#설치-방식별-명령)
-   - [전제 조건](#전제-조건)
-6. [네이티브 파일 다이얼로그](#6-네이티브-파일-다이얼로그)
-   - [플랫폼별 동작](#플랫폼별-동작)
-   - [공통 동작](#공통-동작)
-   - [비활성 조건](#비활성-조건)
+   - [상태 및 캐시 파일](#상태-및-캐시-파일)
+6. [지원 플랫폼](#6-지원-플랫폼)
+   - [릴리스 대상](#릴리스-대상)
+   - [macOS](#macos)
+   - [Linux](#linux)
+   - [Windows](#windows)
+   - [Debian과 Ubuntu (.deb)](#debian과-ubuntu-deb)
+   - [Fedora와 RHEL 계열 (.rpm)](#fedora와-rhel-계열-rpm)
+   - [Raspberry Pi](#raspberry-pi)
+   - [지원하는 셸](#지원하는-셸)
 7. [검증 상태](#7-검증-상태)
    - [검증 결과](#검증-결과)
-8. [수동 확인 절차](#8-수동-확인-절차)
-   - [임시 SSH 디렉터리 확인](#임시-ssh-디렉터리-확인)
-   - [목록과 접속 폼 확인](#목록과-접속-폼-확인)
-   - [키 로그인 설정 확인](#키-로그인-설정-확인)
-   - [히스토리와 표시 언어 확인](#히스토리와-표시-언어-확인)
-   - [마우스 확인](#마우스-확인)
-   - [업데이트 확인](#업데이트-확인)
-9. [개발](#9-개발)
-   - [모듈 구성](#모듈-구성)
+   - [수동 확인 절차](#수동-확인-절차)
+      - [임시 SSH 디렉터리 확인](#임시-ssh-디렉터리-확인)
+      - [목록과 접속 폼 확인](#목록과-접속-폼-확인)
+      - [키 로그인 설정 확인](#키-로그인-설정-확인)
+      - [히스토리와 표시 언어 확인](#히스토리와-표시-언어-확인)
+      - [마우스 확인](#마우스-확인)
+      - [업데이트 확인](#업데이트-확인)
+8. [개발](#8-개발)
+   - [저장소 구성](#저장소-구성)
    - [검증 명령](#검증-명령)
+   - [릴리스 만드는 방법](#릴리스-만드는-방법)
    - [작업 방식](#작업-방식)
+9. [라이선스](#9-라이선스)
+
+---
 
 ## 1. 개요
 
@@ -106,7 +153,7 @@ cargo install --path .
 |---|---|
 | 저장소 | 기본 `~/.ssh/config`, 별도 DB 없음 |
 | 접속 | 시스템 `ssh` 실행, SSH 프로토콜 미구현 |
-| 적용값 확인 | 시스템 `ssh -G` 실행 |
+| 적용값 확인 | 시스템 `ssh -G` 실행. `SSHTUI_SSH_DIR` 지정 시 `-F` 전달 |
 | 터미널에서 재사용 | 기본 설정에 저장한 호스트는 `ssh <닉네임>`으로 접속 |
 
 ### 범위 외 기능
@@ -119,45 +166,212 @@ cargo install --path .
 
 ## 2. 설치
 
-### 요구 사항
+<!-- 첫 릴리스 게시 후 바로 아래 안내 삭제 -->
+> 현재 `hungryZoo/sshtui` 저장소와 첫 릴리스는 게시 전 상태. 첫 릴리스 게시 전에는 설치 스크립트, Homebrew, 패키지 경로가 동작하지 않으며 로컬 소스에서만 설치 가능.
 
-- Rust stable 툴체인.
-- `PATH`에서 실행할 수 있는 OpenSSH 클라이언트(`ssh`).
-- TUI 입출력을 위한 대화형 터미널.
+공통 실행 요건은 대화형 터미널과 `PATH`에서 찾을 수 있는 OpenSSH 클라이언트(`ssh` 또는 `ssh.exe`).
 
-### 소스 설치
+### 설치 스크립트 (권장)
 
-저장소 루트에서 설치.
+macOS와 Linux에서 관리자 권한 없이 설치. 아래 명령을 Bash, zsh, fish, ksh, dash, csh, tcsh, Nushell 등에서 동일하게 사용. 스크립트를 해석하는 셸은 `sh`.
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.sh | sh
+```
+
+`curl`이 없으면 `wget` 사용.
+
+```bash
+wget -qO- https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.sh | sh
+```
+
+대상에 맞는 압축 파일과 `SHA256SUMS`를 내려받아 해시 확인 후 설치. 설치 전과 후에 실행 파일의 `--version` 확인.
+
+| 옵션 또는 환경변수 | 동작 |
+|---|---|
+| `--bin-dir DIR`, `--bin-dir=DIR` | 설치 디렉터리 지정. 환경변수보다 우선 |
+| `--version VER`, `--version=VER` | 설치할 릴리스 버전 지정. `SSHTUI_VERSION`보다 우선 |
+| `-h`, `--help` | 설치 스크립트 도움말 출력. 다운로드한 스크립트에서 `sh ./install.sh --help` 실행 |
+| `SSHTUI_INSTALL_DIR` | 기본 설치 디렉터리(`~/.local/bin`) 변경 |
+| `SSHTUI_BIN_DIR` | `SSHTUI_INSTALL_DIR`가 비어 있거나 미설정일 때 적용하는 설치 디렉터리 |
+| `SSHTUI_VERSION` | 최신 릴리스 대신 지정 버전 설치. `v` 접두사 허용 |
+| `SSHTUI_DOWNLOAD_BASE` | 릴리스 자산의 기준 URL 지정(`file://` 포함). `SSHTUI_VERSION` 또는 `--version` 필수 |
+
+설치 경로는 기본 `~/.local/bin/sshtui`. 디렉터리가 `PATH`에 없을 때 `$SHELL`에 맞는 추가 명령을 출력하며, 셸 설정 파일의 자동 수정 없음. 아래 `<설치 디렉터리>`는 출력된 실제 경로로 교체.
+
+| 셸 | `PATH` 추가 명령 | 설정 저장 위치 |
+|---|---|---|
+| Bash, zsh | `export PATH="<설치 디렉터리>:$PATH"` | Bash는 `~/.bashrc`(대화형 셸) 또는 `~/.bash_profile`(로그인 셸), zsh는 `~/.zshrc` |
+| fish | `fish_add_path '<설치 디렉터리>'` | 기본적으로 fish의 범용 변수에 저장 |
+| csh, tcsh | `set path = ("<설치 디렉터리>" $path)` | `~/.cshrc` 또는 tcsh의 `~/.tcshrc` |
+| Nushell | `$env.PATH = ($env.PATH \| prepend "<설치 디렉터리>")` | `$nu.config-path`가 가리키는 설정 파일 |
+
+### Windows (PowerShell)
+
+Windows PowerShell 5.1과 PowerShell 7 공통 설치 명령. Windows 대상의 검증 수준은 [지원 플랫폼](#windows) 참고.
+
+```powershell
+irm https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.ps1 | iex
+```
+
+`cmd.exe`에서 실행할 때는 Windows PowerShell 호출.
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.ps1 | iex"
+```
+
+대상 ZIP의 SHA-256과 설치 전후 실행 파일의 버전 확인. 관리자 권한 없이 기본 `%LOCALAPPDATA%\Programs\sshtui\bin\sshtui.exe`에 설치.
+
+| 환경변수 | 동작 |
+|---|---|
+| `SSHTUI_INSTALL_DIR` | 설치 디렉터리 변경 |
+| `SSHTUI_VERSION` | 최신 릴리스 대신 지정 버전 설치. `v` 접두사 허용 |
+| `SSHTUI_DOWNLOAD_BASE` | 릴리스 자산의 기준 URL 지정(`file://` 포함). `SSHTUI_VERSION` 필수 |
+| `SSHTUI_ARCH` | 자동 감지 대신 아키텍처 지정. `AMD64`, `x86_64`, `x64` 또는 `ARM64`, `aarch64` |
+| `SSHTUI_NO_MODIFY_PATH` | 비어 있지 않고 `0`이 아닌 값이면 `PATH` 갱신 생략 |
+
+기본 동작은 사용자 `PATH`와 설치를 실행한 PowerShell 프로세스의 `PATH`에 설치 디렉터리 추가. `cmd.exe`에서 실행했다면 새 창에서 사용자 `PATH` 확인.
+
+### Homebrew
+
+macOS(Apple Silicon, Intel)와 Linux(x86_64, ARM64)에서 포뮬러가 대상에 맞는 바이너리를 선택. 전체 이름을 지정하면 탭 자동 추가.
+
+```bash
+brew install hungryZoo/tap/sshtui
+```
+
+포뮬러 게시 위치는 [hungryZoo/homebrew-tap](https://github.com/hungryZoo/homebrew-tap).
+
+### Linux 패키지 (.deb / .rpm)
+
+최신 릴리스의 버전 없는 별칭 사용. `.deb`의 의존성은 `openssh-client`, `.rpm`의 의존성은 `openssh-clients`.
+
+| 패키지 | 아키텍처 | 다운로드 | 설치 |
+|---|---|---|---|
+| `.deb` | x86_64 | `curl -fLO https://github.com/hungryZoo/sshtui/releases/latest/download/sshtui_amd64.deb` | `sudo apt install ./sshtui_amd64.deb` |
+| `.deb` | ARM64 | `curl -fLO https://github.com/hungryZoo/sshtui/releases/latest/download/sshtui_arm64.deb` | `sudo apt install ./sshtui_arm64.deb` |
+| `.deb` | ARMv6 또는 ARMv7 이상 32비트 hard-float OS | `curl -fLO https://github.com/hungryZoo/sshtui/releases/latest/download/sshtui_armhf.deb` | `sudo apt install ./sshtui_armhf.deb` |
+| `.rpm` | x86_64 | `curl -fLO https://github.com/hungryZoo/sshtui/releases/latest/download/sshtui-x86_64.rpm` | `sudo dnf install ./sshtui-x86_64.rpm` |
+| `.rpm` | ARM64 | `curl -fLO https://github.com/hungryZoo/sshtui/releases/latest/download/sshtui-aarch64.rpm` | `sudo dnf install ./sshtui-aarch64.rpm` |
+
+### 수동 설치
+
+[릴리스 페이지](https://github.com/hungryZoo/sshtui/releases/latest)에서 [릴리스 대상](#릴리스-대상)에 맞는 자산 선택. 아래 명령의 `<version>`과 `<triple>`은 실제 파일명에 맞게 치환.
+
+macOS와 Linux 자산 이름은 `sshtui-<version>-<triple>.tar.gz`. 압축을 푼 뒤 `PATH`에 있는 디렉터리에 `sshtui` 배치. 아래는 `~/.local/bin`을 사용하는 예시.
+
+```bash
+tar -xzf 'sshtui-<version>-<triple>.tar.gz'
+mkdir -p "$HOME/.local/bin"
+install -m 0755 sshtui "$HOME/.local/bin/sshtui"
+```
+
+Windows 자산 이름은 `sshtui-<version>-<triple>.zip`. 아래 예시는 압축을 푼 뒤 `sshtui.exe`를 사용자 설치 디렉터리에 복사하는 방법. 해당 디렉터리는 사용자 `PATH`에 추가.
+
+```powershell
+Expand-Archive -LiteralPath '.\sshtui-<version>-<triple>.zip' -DestinationPath '.\sshtui-extracted'
+$bin = Join-Path $env:LOCALAPPDATA 'Programs\sshtui\bin'
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item -LiteralPath '.\sshtui-extracted\sshtui.exe' -Destination $bin
+```
+
+### 소스에서 설치
+
+Rust stable 툴체인 필요. GitHub 저장소 공개 후 Git에서 바로 설치 가능.
+
+```bash
+cargo install --git https://github.com/hungryZoo/sshtui --locked
+```
+
+공개 후 클론해서 설치하는 방법. 이미 로컬에 소스가 있으면 저장소 루트에서 마지막 줄만 실행.
+
+```bash
+git clone https://github.com/hungryZoo/sshtui.git
+cd sshtui
 cargo install --path .
 ```
 
-또는 저장소 루트에서 빌드 후 실행.
+또는 저장소 루트에서 `cargo build --release` 실행 후 `target/release/sshtui`(Windows는 `target\release\sshtui.exe`) 실행. crates.io 배포 없음(`publish = false`).
+
+### 검증하며 설치
+
+스크립트를 파일로 내려받아 내용을 읽은 다음 마지막 줄 실행.
 
 ```bash
-cargo build --release
-target/release/sshtui
+curl -fsSLo install.sh https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.sh
+less ./install.sh
+sh ./install.sh
 ```
 
-Windows 빌드 실행 파일은 `target/release/sshtui.exe`. crates.io 배포 없음(`publish = false`).
+```powershell
+Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.ps1' -OutFile '.\install.ps1'
+Get-Content -LiteralPath '.\install.ps1'
+& .\install.ps1
+```
+
+특정 버전으로 고정할 때는 `<version>`을 실제 버전으로 바꾸고 해당 태그에 포함된 설치 스크립트 다운로드. 내용을 확인한 뒤 `SSHTUI_VERSION`을 지정해 실행.
+
+```bash
+curl -fsSLo install.sh 'https://github.com/hungryZoo/sshtui/releases/download/v<version>/install.sh'
+less ./install.sh
+SSHTUI_VERSION='<version>' sh ./install.sh
+```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/hungryZoo/sshtui/releases/download/v<version>/install.ps1' -OutFile '.\install.ps1'
+Get-Content -LiteralPath '.\install.ps1'
+$env:SSHTUI_VERSION = '<version>'
+& .\install.ps1
+```
+
+수동 설치와 패키지 설치에서는 자산과 같은 릴리스의 `SHA256SUMS`를 같은 디렉터리에 내려받아 대상 파일의 `OK` 확인.
+
+```bash
+# Linux
+sha256sum -c SHA256SUMS --ignore-missing
+# macOS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Windows에서는 `Get-FileHash -Algorithm SHA256 -LiteralPath '.\sshtui-<version>-<triple>.zip'` 결과를 `SHA256SUMS`의 해당 줄과 대조.
+
+GitHub CLI로 빌드 출처 증명 확인. `./sshtui_amd64.deb`는 검증할 자산 경로로 교체.
+
+```bash
+gh attestation verify -R hungryZoo/sshtui ./sshtui_amd64.deb
+```
+
+### 업데이트와 삭제
+
+설치 방식을 판정할 수 있고 새 버전이 있으면 목록의 `u` 또는 `sshtui --update`로 업데이트 적용 가능. Windows 설치 스크립트로 설치한 실행 파일은 설치 명령 재실행. 자동 판정과 실행 동작은 [업데이트](#업데이트) 참고.
+
+| 설치 방식 | 업데이트 | 삭제 |
+|---|---|---|
+| `install.sh` | 같은 설치 명령 재실행. 사용자 지정 디렉터리는 기존 `--bin-dir` 또는 환경변수 유지 | 설치한 `sshtui` 삭제. 필요한 경우 셸 설정에서 추가한 `PATH` 항목 제거 |
+| `install.ps1` | 같은 [PowerShell 설치 명령](#windows-powershell) 재실행. 기존 설치 디렉터리 유지 | 설치한 `sshtui.exe`와 같은 디렉터리의 `sshtui.exe*.old` 백업 삭제. 사용자 `PATH`에서 추가한 항목 제거 |
+| Homebrew | `brew upgrade hungryZoo/tap/sshtui` | `brew uninstall hungryZoo/tap/sshtui` |
+| `.deb` | 최신 `.deb`를 내려받아 같은 설치 명령 재실행 | `sudo apt remove sshtui` |
+| `.rpm` | 최신 `.rpm`을 내려받아 `sudo dnf upgrade ./<파일명>.rpm` 실행 | `sudo dnf remove sshtui` |
+| cargo | Git 설치 명령 재실행 또는 최신 소스의 저장소 루트에서 `cargo install --path .` 실행 | `cargo uninstall sshtui` |
+| 수동 배치 | 새 자산의 실행 파일로 교체 | 배치한 실행 파일 삭제 |
+
+앱의 상태와 캐시도 정리하려면 [상태 및 캐시 파일](#상태-및-캐시-파일) 참고.
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 3. 사용법
-
-### 실행
+## 3. 빠른 시작
 
 ```bash
 sshtui
 ```
 
-| 옵션 | 동작 |
-|---|---|
-| `-h`, `--help` | 도움말 출력 |
-| `-V`, `--version` | 버전 출력 |
-| `--check-update` | 즉시 새 버전 확인. 종료 코드 `0` 최신, `10` 업데이트 있음, `11` 접속 불가 |
-| `--update` | 즉시 확인 후 새 버전이 있으면 설치. 종료 코드 `0` 완료 또는 최신, `1` 실패 또는 설치 방식 불명, `11` 접속 불가 |
+1. 호스트 목록에서 `↑`와 `↓`로 호스트 선택, `Enter`로 접속.
+2. 새 호스트는 `+ New connection` 줄에서 `Enter`. 저장 호스트와 히스토리 후보가 없으면 시작부터 새 접속 폼 표시.
+3. 폼에서 `Address`와 필요한 접속 값 입력 후 `Enter`. `Nickname`이 있으면 저장 후 접속, 비어 있으면 1회 접속.
+
+<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
+
+## 4. 사용법
 
 모든 화면에서 `Ctrl+C`로 종료.
 
@@ -175,11 +389,7 @@ sshtui
 - 마지막으로 접속한 별칭이 목록에 있으면 해당 호스트에 시작 커서 배치. 없으면 첫 줄 선택.
 - 저장된 별칭으로 접속할 때 시스템 `ssh` 실행 직전에 별칭 기록. 닉네임 없는 1회 접속은 기록 대상에서 제외.
 
-| 플랫폼 | 마지막 별칭 기록 파일 |
-|---|---|
-| Linux | 절대 경로인 `$XDG_STATE_HOME/sshtui/last-host` 우선. 미설정 또는 상대 경로이면 `~/.local/state/sshtui/last-host` |
-| macOS | `~/Library/Application Support/sshtui/last-host` |
-| Windows | `%LOCALAPPDATA%\sshtui\last-host` (Windows의 Local AppData 알려진 폴더 기준) |
+마지막 접속의 기록 경로는 [상태 및 캐시 파일](#상태-및-캐시-파일) 참고.
 
 - 머리줄에 전체 수(예: `4 hosts`) 표시. 필터 입력 중이거나 필터가 적용된 상태에서는 결과 수와 전체 수(예: `1 of 4 hosts`) 표시.
 - 빈 필터 바에 `/ filter hosts` 표시. 필터 결과에서 이름과 일치하는 부분 강조, 결과가 없으면 `No matching hosts` 표시.
@@ -294,17 +504,24 @@ sshtui
 
 시작 시 아래 순서로 읽을 파일 결정. 중복 경로는 먼저 나온 항목만 사용.
 
-| 순서 | 경로 | 형식 |
-|---|---|---|
-| 1 | `HISTFILE`이 가리키는 파일 | 파일 이름 기준 판별 |
-| 2 | `$ZDOTDIR/.zsh_history` | zsh |
-| 3 | `~/.zsh_history` | zsh |
-| 4 | `~/.bash_history` | 일반 줄 형식 |
-| 5 | `$XDG_DATA_HOME/fish/fish_history`, 미설정 또는 빈 값이면 `~/.local/share/fish/fish_history` | fish |
-| 6 | 사용자 설정 디렉터리의 `Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt` (Windows는 `%APPDATA%` 기준) | 일반 줄 형식 |
+| 순서 | 경로 | 형식 | 셸 |
+|---|---|---|---|
+| 1 | `HISTFILE`이 가리키는 파일 | 파일 이름 기준 판별 | 사용자 지정 |
+| 2 | `$ZDOTDIR/.zsh_history` | zsh | zsh |
+| 3 | `~/.zsh_history` | zsh | zsh |
+| 4 | `~/.bash_history` | 일반 줄 형식 | Bash |
+| 5 | `$XDG_DATA_HOME/fish/fish_history`, 미설정 또는 빈 값이면 `~/.local/share/fish/fish_history` | fish | fish |
+| 6 | `~/.history` | 일반 줄 형식 | csh, tcsh |
+| 7 | `~/.sh_history` | 일반 줄 형식 | ksh |
+| 8 | `~/.mksh_history` | 일반 줄 형식 | mksh |
+| 9 | `<config_dir>/nushell/history.txt` | 일반 줄 형식 | Nushell |
+| 10 | `~/.local/share/powershell/PSReadLine/ConsoleHost_history.txt` | 일반 줄 형식 | PowerShell(macOS, Linux) |
+| 11 | `<config_dir>/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt` | 일반 줄 형식 | PowerShell(Windows) |
+
+`<config_dir>`는 플랫폼의 사용자 설정 디렉터리. Linux는 절대 경로인 `$XDG_CONFIG_HOME` 또는 `~/.config`, macOS는 `~/Library/Application Support`, Windows는 `%APPDATA%` 기준. 설정 디렉터리를 찾지 못하면 해당 후보 생략. Nushell은 텍스트 히스토리 `history.txt`만 지원.
 
 - `HISTFILE`과 `SSHTUI_HISTORY_FILE`은 파일 이름에 `fish`가 있으면 fish, 그 외에 `zsh`가 있으면 zsh, 나머지는 일반 줄 형식으로 판별. 대소문자 구분.
-- zsh는 일반 줄과 확장 형식(`: <시각>:<소요 시간>;<명령>`), fish는 `- cmd: ` 항목 사용. 일반 줄 형식은 한 줄에 명령 하나, `#` 뒤 숫자만 있는 bash 타임스탬프 줄 생략.
+- zsh는 일반 줄과 확장 형식(`: <시각>:<소요 시간>;<명령>`), fish는 `- cmd: ` 항목 사용. 일반 줄 형식은 줄바꿈과 NUL로 명령을 나누고 앞의 ASCII 제어 문자와 디코딩 대체 문자 제거. Bash의 `#<숫자>`와 tcsh의 `#+<숫자>` 타임스탬프 줄 생략.
 - 읽기 전용으로 각 파일의 끝 최대 256 KiB 확인. 중간부터 읽으면 첫 줄 생략. 선행 공백을 제외하고 `ssh`와 공백 또는 탭으로 시작하는 명령만 히스토리 모듈 밖으로 전달. 화면에는 명령 원문 대신 추출한 접속 값과 횟수 표시.
 
 | 항목 | 해석 규칙 |
@@ -442,6 +659,150 @@ TrueColor 모드의 호버 대상과 색 변화.
 | `Port` | 비어 있거나 ASCII 숫자로 구성된 1-65535 |
 | `Key file` | 공백 허용. 제어 문자와 `"` 금지. 첫 문자 `-` 금지 |
 
+### ssh config 연동
+
+#### 읽기
+
+- SSH 디렉터리의 `config`에서 `Include`를 재귀적으로 읽고 glob을 확장. 상대 경로는 SSH 디렉터리 기준, `~`와 `~/` 경로는 홈 디렉터리 기준.
+- `Host`의 개별 패턴을 목록에 표시. `*` 또는 `?`가 포함된 패턴, `!`로 시작하는 패턴, `Match` 헤더는 목록에서 제외.
+- 항목별 출처 파일과 `Host` 줄 번호 표시. 상세 열의 적용값은 `ssh -G <닉네임>` 결과 사용.
+
+#### 새 호스트 저장
+
+- 루트 `config`가 없으면 생성. Unix에서 새 파일 권한은 `600`, 새 디렉터리 생성 모드는 `700`(umask 적용).
+- 와일드카드 또는 부정 패턴이 있는 첫 `Host` 블록이나 첫 `Match` 블록 중 먼저 나오는 블록 앞에 삽입. 블록에 붙은 주석이 있으면 주석 앞에 삽입. 해당 블록이 없으면 파일 끝에 추가. SSH가 옵션별로 먼저 얻은 값을 적용하는 순서를 고려한 배치.
+- `HostName`, `User`, `Port`, `IdentityFile` 중 입력된 값만 기록. `Password` 체크 시 `PasswordAuthentication no` 기록.
+- 공백, 탭, `#`, 작은따옴표가 포함되거나 `=`로 시작하는 인자는 큰따옴표로 감싸며 필요한 역슬래시를 이스케이프.
+- 저장 후 `ssh -G` 조회가 성공하고 지정한 값과 적용값이 다르면 알림 표시.
+
+#### 편집과 삭제
+
+- `Include` 대상 파일을 포함해 호스트를 정의한 파일에서 직접 수정. 대상 위치의 줄만 수정, 추가, 삭제하고 나머지 바이트 보존.
+- 폼에는 해당 블록의 직접 설정값을 채움. 블록에 없는 옵션의 적용값은 `inherited:`로 표시. 선택 필드의 직접 설정값을 비우면 해당 줄 삭제.
+- 여러 `IdentityFile` 줄 등 폼으로 표현할 수 없는 값은 해당 필드에 `read-only`로 표시하고 원본 유지.
+- 한 `Host` 줄의 여러 패턴은 옵션을 공유. 이름 변경과 삭제는 선택한 패턴에만 적용. 마지막 패턴 삭제 시 블록 전체 삭제.
+- 편집 저장과 삭제 전에 변경 내용 확인. 쓰기 권한이 없는 파일의 항목은 목록에서 `read-only` 표시, 편집과 삭제 비활성.
+
+#### 쓰기 공통 규칙
+
+- 기존 파일 교체 직전에 다시 읽어 바이트를 비교. 외부 변경을 발견하면 쓰기를 중단하고 설정을 다시 읽음.
+- 기존 파일의 직전 내용은 같은 디렉터리의 `.<파일명>.sshtui.bak`에 백업하고 다음 교체 때 덮어씀. `Include conf.d/*` 같은 glob의 일반 매칭에서 빠지도록 파일명을 `.`으로 시작.
+- 임시 파일에 쓴 뒤 교체. 심볼릭 링크는 유지하고 해석된 대상 파일을 교체하며, 백업도 대상 파일의 디렉터리에 생성.
+- 기존 파일 권한 유지.
+
+#### 닉네임 규칙
+
+- 새 호스트를 저장할 때 `Host`의 단일 이름으로 사용. 편집 시 닉네임 필수.
+- 입력 문자 제한은 [입력 검증](#입력-검증) 참고. 새 이름은 목록에 있는 이름과 대소문자를 구분하여 비교. 기존 이름을 유지하는 편집은 중복 검사 생략.
+
+#### 알려진 제한
+
+| 항목 | 동작 |
+|---|---|
+| `Include`의 `${VAR}`와 `%` 토큰 | 인자를 확장하지 않고 경고 표시 |
+| `~user` | 홈 디렉터리로 확장하지 않음 |
+| 블록 삭제 | 블록 위의 주석 줄 유지 |
+| 하드 링크 | 파일 교체로 인해 기존 하드 링크 관계가 끊어짐 |
+| `SSHTUI_SSH_DIR`와 상대 경로 `Include` | 파일이 있으면 `ssh`에 `-F <dir>/config`, 없으면 `-F none` 전달. OpenSSH의 상대 경로 `Include`는 실제 `~/.ssh` 기준이므로 목록과 적용값이 다를 수 있음 |
+| 상세 열의 `Key file` | `ssh -G` 출력 사용. 설정이 없으면 SSH 기본 키 경로들이 표시될 수 있음 |
+
+### 업데이트
+
+#### 확인 방식
+
+- 시작 시 네트워크 응답 대기 없음. 알림은 이전 실행이 남긴 캐시 기준으로만 표시.
+- 마지막 시도 후 24시간 이상 경과했거나 시도 기록이 없을 때 백그라운드 확인. 요청 전에 시도 시각을 기록하므로 오프라인이거나 즉시 종료해도 24시간에 최대 1회 시도.
+- `curl`로 `<저장소>/releases/latest`의 최종 리다이렉트 URL을 읽어 태그에서 버전 추출. GitHub API 미사용, 제한 시간 2초. `curl`이 없으면 자동 확인 없이 정상 실행.
+- `MAJOR.MINOR.PATCH`의 세 정수를 순서대로 비교, `v` 접두사 허용. `-rc1` 등이 붙은 형식은 새 버전으로 판정하지 않음.
+- 자동 확인은 하루 최대 1회 `github.com`에 요청. `SSHTUI_NO_UPDATE_CHECK=1`로 자동 확인과 알림 비활성화.
+
+#### 적용 흐름
+
+1. 호스트 목록에서 `u`로 `Update sshtui` 팝업 열기. 제목 오른쪽에 `<현재 버전> → <최신 버전>`, 본문에 설치 방식(`Installed via`) 표시. 설치 방식에 따라 실행할 명령(`Command`) 또는 릴리스 URL(`Download`) 표시.
+2. 실행할 명령이 있으면 `Enter`로 TUI 종료와 터미널 복원 후 명령 실행. 복원된 터미널에서 `sudo` 프롬프트 입력과 설치 출력 확인 가능.
+3. 성공 시 `Start sshtui again to use the new version.` 안내 후 종료.
+
+| 화면 안내 | 실제 키 | 동작 |
+|---|---|---|
+| `enter update and exit` | `Enter` | TUI 종료 후 업데이트 명령 실행 |
+| `esc cancel` / `esc close` | `Esc` | 목록 복귀. 실행할 명령이 없으면 `esc close` 표시 |
+
+#### 설치 방식별 명령
+
+| 설치 방식 | 판정 근거 | 실행 명령 |
+|---|---|---|
+| Homebrew | 실행 파일 경로에 `/Cellar/`, `/homebrew/`, `/linuxbrew/` 중 하나 포함 | `brew upgrade hungryZoo/tap/sshtui` |
+| cargo | `~/.cargo/bin/` 하위 | `cargo install --git <저장소> --tag v<버전> --locked` |
+| install.sh 또는 수동 복사 | 그 외 홈 디렉터리 하위 | `main` 브랜치의 `install.sh`를 임시 디렉터리에 내려받은 뒤 `sh <tmp>/install.sh --bin-dir <원래 디렉터리>` |
+| .deb | `/usr/bin/` 또는 `/usr/local/bin/` 하위, `/var/lib/dpkg/status` 파일 존재, 지원 아키텍처 | 릴리스 에셋을 임시 디렉터리에 내려받은 뒤 `sudo dpkg -i <tmp>/sshtui_<arch>.deb` |
+| .rpm | 같은 경로, .deb 판정 조건 불충족, `/var/lib/rpm` 디렉터리 존재, 지원 아키텍처 | `sudo rpm -U <저장소>/releases/latest/download/sshtui-<arch>.rpm` |
+| 불명 | 위 조건에 해당하지 않거나 실행 파일 경로 조회 실패 | 실행 없음. `Download`에 릴리스 URL 표시 |
+
+- Windows는 `~/.cargo/bin` 하위면 cargo, 그 외는 불명으로 판정. PowerShell 설치본은 [설치 명령 재실행](#업데이트와-삭제).
+- 패키지 아키텍처 매핑은 `.deb`의 경우 `x86_64` → `amd64`, `aarch64` → `arm64`, `arm` → `armhf`. `.rpm`은 `x86_64`와 `aarch64` 지원.
+- 각 단계의 프로그램과 인자를 셸의 명령 해석 없이 직접 전달. 직접 내려받는 파일은 실행마다 새로 만드는 임시 디렉터리에 저장.
+
+#### 전제 조건
+
+버전 확인에는 `hungryZoo/sshtui` 저장소와 `v<version>` 태그의 릴리스 필요. 저장소와 릴리스 게시 전에는 확인 결과가 접속 불가. 설치 방식별로 `main` 브랜치의 `install.sh`와 `--bin-dir` 지원, Homebrew 포뮬러 또는 버전 없는 패키지 별칭 필요. 배포 준비 상태는 [설치](#2-설치) 참고.
+
+앱에서 사용하는 저장소 주소의 정의 위치는 `Cargo.toml`의 `repository`.
+
+### 네이티브 파일 다이얼로그
+
+#### 플랫폼별 동작
+
+| 플랫폼 | 수단 | 숨김파일 표시 | 비고 |
+|---|---|---|---|
+| macOS | `osascript`의 `choose file ... with invisibles` | 강제 표시 요청 | `Select an SSH private key` 프롬프트 |
+| Windows | `rfd`의 `IFileOpenDialog`, `FOS_FORCESHOWHIDDEN` | 강제 표시 요청 | `set_show_hidden_files(true)` |
+| Linux와 그 외 Unix | `zenity --file-selection` 또는 `kdialog --getopenfilename` | 강제 표시 옵션 미사용, 화면에 안내 표시 | KDE에서는 설치된 `kdialog` 우선. 그 외에는 `zenity` 우선, 없으면 `kdialog` |
+
+- `zenity` 안내 문구 `Hidden files: press Ctrl+H in the dialog`.
+- `kdialog` 안내 문구 `Hidden files: press Alt+. in the dialog`.
+- Linux에서 `rfd`와 XDG portal을 사용하지 않는 이유는 portal의 FileChooser에 숨김파일 표시 옵션이 없고 `rfd`의 Linux 숨김파일 옵션은 GTK3 백엔드에서만 지원되기 때문.
+
+#### 공통 동작
+
+- 시작 위치는 SSH 디렉터리. 디렉터리가 없으면 존재하는 가장 가까운 상위 디렉터리 사용.
+- 취소 시 폼으로 복귀하고 기존 입력값 유지. 다이얼로그 종료 후 TUI 화면 전체 다시 그리기.
+
+#### 비활성 조건
+
+| 조건 | 표시 문구 |
+|---|---|
+| SSH 세션(`SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY` 중 하나 이상이 비어 있지 않음) | `Browse is unavailable over SSH (no local desktop session)` |
+| Linux와 그 외 Unix에서 `DISPLAY`와 `WAYLAND_DISPLAY` 모두 미설정 또는 빈 값 | `Browse is unavailable: no graphical session (DISPLAY and WAYLAND_DISPLAY are not set)` |
+| Linux와 그 외 Unix에서 `zenity`와 `kdialog` 모두 `PATH`에 없음 | `Browse is unavailable: install zenity or kdialog` |
+
+<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
+
+## 5. 설정
+
+### 환경변수
+
+| 이름 | 동작 |
+|---|---|
+| `SSHTUI_SSH_DIR` | SSH 디렉터리 변경. 미설정 또는 빈 값이면 `~/.ssh` 사용. 상대 경로는 현재 작업 디렉터리 기준 |
+| `SSHTUI_LANG` | TUI 표시 언어 강제 지정(`ko` 또는 `en`) |
+| `SSHTUI_NO_MOUSE` | 비어 있지 않고 `0`이 아닌 값이면 마우스 캡처와 호버 비활성화. 터미널 기본 텍스트 선택 유지 |
+| `SSHTUI_NO_HISTORY` | 비어 있지 않고 `0`이 아닌 값이면 셸 히스토리 가져오기 비활성화 |
+| `SSHTUI_HISTORY_FILE` | 기본 셸 히스토리 파일 목록 대신 지정한 파일 하나만 사용. 가져오기가 비활성화된 경우 무시 |
+| `SSHTUI_NO_UPDATE_CHECK` | 비어 있지 않고 `0`이 아닌 값이면 자동 확인과 알림 비활성화. `--check-update`와 `--update`에는 영향 없음 |
+
+`LC_ALL`, `LC_MESSAGES`, `LANG`과 `COLORTERM`의 적용 규칙은 아래 [표시 언어](#표시-언어)와 [색](#색) 참고. 설치 스크립트 전용 변수는 [설치](#2-설치) 참고.
+
+### 실행 옵션
+
+| 옵션 | 동작 |
+|---|---|
+| `-h`, `--help` | 도움말 출력 |
+| `-V`, `--version` | 버전 출력 |
+| `--check-update` | 즉시 새 버전 확인. 종료 코드 `0` 최신, `10` 업데이트 있음, `11` 접속 불가 |
+| `--update` | 즉시 확인 후 새 버전이 있으면 설치. 종료 코드 `0` 완료 또는 최신, `1` 실패 또는 설치 방식 불명, `11` 접속 불가 |
+
+지원하는 옵션은 한 번에 하나. 알 수 없는 인자나 여러 옵션을 전달하면 종료 코드 `2`.
+
 ### 표시 언어
 
 - 결정 순서는 `SSHTUI_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → 시스템 로캘. `SSHTUI_LANG`의 `ko`와 `en`은 대소문자 구분 없이 적용하며 그 외 값은 로캘 판정으로 진행.
@@ -474,157 +835,101 @@ TrueColor 모드의 호버 대상과 색 변화.
 | `HOVER_SELECTED` | `(46, 52, 63)` | 선택된 호스트 줄과 키 목록 줄의 호버 배경 |
 | `HOVER_ACCENT` | `(155, 229, 214)` | 포커스된 키 안내 버튼의 호버 배경 |
 
-### 환경변수
+### 상태 및 캐시 파일
 
-| 이름 | 동작 |
-|---|---|
-| `SSHTUI_SSH_DIR` | SSH 디렉터리 변경. 미설정 또는 빈 값이면 `~/.ssh` 사용. 상대 경로는 현재 작업 디렉터리 기준 |
-| `SSHTUI_LANG` | TUI 표시 언어 강제 지정(`ko` 또는 `en`) |
-| `SSHTUI_NO_MOUSE` | 비어 있지 않고 `0`이 아닌 값이면 마우스 캡처와 호버 비활성화. 터미널 기본 텍스트 선택 유지 |
-| `SSHTUI_NO_HISTORY` | 비어 있지 않고 `0`이 아닌 값이면 셸 히스토리 가져오기 비활성화 |
-| `SSHTUI_HISTORY_FILE` | 기본 셸 히스토리 파일 목록 대신 지정한 파일 하나만 사용. 가져오기가 비활성화된 경우 무시 |
-| `SSHTUI_NO_UPDATE_CHECK` | 비어 있지 않고 `0`이 아닌 값이면 자동 확인과 알림 비활성화. `--check-update`와 `--update`에는 영향 없음 |
+| 플랫폼 | 마지막 접속 별칭 | 업데이트 캐시 |
+|---|---|---|
+| Linux | 절대 경로인 `$XDG_STATE_HOME/sshtui/last-host` 우선. 미설정 또는 상대 경로이면 `~/.local/state/sshtui/last-host` | 절대 경로인 `$XDG_CACHE_HOME/sshtui/update-check` 우선. 미설정 또는 상대 경로이면 `~/.cache/sshtui/update-check` |
+| macOS | `~/Library/Application Support/sshtui/last-host` | `~/Library/Caches/sshtui/update-check` |
+| Windows | `%LOCALAPPDATA%\sshtui\last-host` | `%LOCALAPPDATA%\sshtui\update-check` |
 
-<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
-
-## 4. ssh config 연동
-
-### 읽기
-
-- SSH 디렉터리의 `config`에서 `Include`를 재귀적으로 읽고 glob을 확장. 상대 경로는 SSH 디렉터리 기준, `~`와 `~/` 경로는 홈 디렉터리 기준.
-- `Host`의 개별 패턴을 목록에 표시. `*` 또는 `?`가 포함된 패턴, `!`로 시작하는 패턴, `Match` 헤더는 목록에서 제외.
-- 항목별 출처 파일과 `Host` 줄 번호 표시. 상세 열의 적용값은 `ssh -G <닉네임>` 결과 사용.
-
-### 새 호스트 저장
-
-- 루트 `config`가 없으면 생성. Unix에서 새 파일 권한은 `600`, 새 디렉터리 생성 모드는 `700`(umask 적용).
-- 와일드카드 또는 부정 패턴이 있는 첫 `Host` 블록이나 첫 `Match` 블록 중 먼저 나오는 블록 앞에 삽입. 블록에 붙은 주석이 있으면 주석 앞에 삽입. 해당 블록이 없으면 파일 끝에 추가. SSH가 옵션별로 먼저 얻은 값을 적용하는 순서를 고려한 배치.
-- `HostName`, `User`, `Port`, `IdentityFile` 중 입력된 값만 기록. `Password` 체크 시 `PasswordAuthentication no` 기록.
-- 공백, 탭, `#`, 작은따옴표가 포함되거나 `=`로 시작하는 인자는 큰따옴표로 감싸며 필요한 역슬래시를 이스케이프.
-- 저장 후 `ssh -G` 조회가 성공하고 지정한 값과 적용값이 다르면 알림 표시.
-
-### 편집과 삭제
-
-- `Include` 대상 파일을 포함해 호스트를 정의한 파일에서 직접 수정. 대상 위치의 줄만 수정, 추가, 삭제하고 나머지 바이트 보존.
-- 폼에는 해당 블록의 직접 설정값을 채움. 블록에 없는 옵션의 적용값은 `inherited:`로 표시. 선택 필드의 직접 설정값을 비우면 해당 줄 삭제.
-- 여러 `IdentityFile` 줄 등 폼으로 표현할 수 없는 값은 해당 필드에 `read-only`로 표시하고 원본 유지.
-- 한 `Host` 줄의 여러 패턴은 옵션을 공유. 이름 변경과 삭제는 선택한 패턴에만 적용. 마지막 패턴 삭제 시 블록 전체 삭제.
-- 편집 저장과 삭제 전에 변경 내용 확인. 쓰기 권한이 없는 파일의 항목은 목록에서 `read-only` 표시, 편집과 삭제 비활성.
-
-### 쓰기 공통 규칙
-
-- 기존 파일 교체 직전에 다시 읽어 바이트를 비교. 외부 변경을 발견하면 쓰기를 중단하고 설정을 다시 읽음.
-- 기존 파일의 직전 내용은 같은 디렉터리의 `.<파일명>.sshtui.bak`에 백업하고 다음 교체 때 덮어씀. `Include conf.d/*` 같은 glob의 일반 매칭에서 빠지도록 파일명을 `.`으로 시작.
-- 임시 파일에 쓴 뒤 교체. 심볼릭 링크는 유지하고 해석된 대상 파일을 교체하며, 백업도 대상 파일의 디렉터리에 생성.
-- 기존 파일 권한 유지.
-
-### 닉네임 규칙
-
-- 새 호스트를 저장할 때 `Host`의 단일 이름으로 사용. 편집 시 닉네임 필수.
-- 입력 문자 제한은 [입력 검증](#입력-검증) 참고. 새 이름은 목록에 있는 이름과 대소문자를 구분하여 비교. 기존 이름을 유지하는 편집은 중복 검사 생략.
-
-### 알려진 제한
-
-| 항목 | 동작 |
-|---|---|
-| `Include`의 `${VAR}`와 `%` 토큰 | 인자를 확장하지 않고 경고 표시 |
-| `~user` | 홈 디렉터리로 확장하지 않음 |
-| 블록 삭제 | 블록 위의 주석 줄 유지 |
-| 하드 링크 | 파일 교체로 인해 기존 하드 링크 관계가 끊어짐 |
-| `SSHTUI_SSH_DIR`와 상대 경로 `Include` | 파일이 있으면 `ssh`에 `-F <dir>/config`, 없으면 `-F none` 전달. OpenSSH의 상대 경로 `Include`는 실제 `~/.ssh` 기준이므로 목록과 적용값이 다를 수 있음 |
-| 상세 열의 `Key file` | `ssh -G` 출력 사용. 설정이 없으면 SSH 기본 키 경로들이 표시될 수 있음 |
-
-<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
-
-## 5. 업데이트
-
-### 확인 방식
-
-- 시작 시 네트워크 응답 대기 없음. 알림은 이전 실행이 남긴 캐시 기준으로만 표시.
-- 마지막 시도 후 24시간 이상 경과했거나 시도 기록이 없을 때 백그라운드 확인. 요청 전에 시도 시각을 기록하므로 오프라인이거나 즉시 종료해도 24시간에 최대 1회 시도.
-- `curl`로 `<저장소>/releases/latest`의 최종 리다이렉트 URL을 읽어 태그에서 버전 추출. GitHub API 미사용, 제한 시간 2초. `curl`이 없으면 자동 확인 없이 정상 실행.
-- `MAJOR.MINOR.PATCH`의 세 정수를 순서대로 비교, `v` 접두사 허용. `-rc1` 등이 붙은 형식은 새 버전으로 판정하지 않음.
-- 자동 확인은 하루 최대 1회 `github.com`에 요청. `SSHTUI_NO_UPDATE_CHECK=1`로 자동 확인과 알림 비활성화.
-
-### 캐시 파일
-
-| 플랫폼 | 경로 |
-|---|---|
-| Linux | `~/.cache/sshtui/update-check`. `$XDG_CACHE_HOME`이 지정된 경우 `$XDG_CACHE_HOME/sshtui/update-check` 우선 |
-| macOS | `~/Library/Caches/sshtui/update-check` |
-| Windows | `%LOCALAPPDATA%\sshtui\update-check` |
+Windows 경로 기준은 Local AppData 알려진 폴더.
 
 - 파일 형식은 `checked_at=<유닉스 초>`와 `latest=<버전>` 두 줄. 확인된 버전이 없으면 `latest=`로 기록.
 - 동시 확인 제어용 `update-check.lock`은 캐시와 같은 디렉터리에 생성.
 - `checked_at=0`으로 바꾸면 자동 확인이 활성화된 다음 실행에서 다시 확인.
 
-### 적용 흐름
-
-1. 호스트 목록에서 `u`로 `Update sshtui` 팝업 열기. 제목 오른쪽에 `<현재 버전> → <최신 버전>`, 본문에 설치 방식(`Installed via`) 표시. 설치 방식에 따라 실행할 명령(`Command`) 또는 릴리스 URL(`Download`) 표시.
-2. 실행할 명령이 있으면 `Enter`로 TUI 종료와 터미널 복원 후 명령 실행. 복원된 터미널에서 `sudo` 프롬프트 입력과 설치 출력 확인 가능.
-3. 성공 시 `Start sshtui again to use the new version.` 안내 후 종료.
-
-| 화면 안내 | 실제 키 | 동작 |
-|---|---|---|
-| `enter update and exit` | `Enter` | TUI 종료 후 업데이트 명령 실행 |
-| `esc cancel` / `esc close` | `Esc` | 목록 복귀. 실행할 명령이 없으면 `esc close` 표시 |
-
-### 설치 방식별 명령
-
-| 설치 방식 | 판정 근거 | 실행 명령 |
-|---|---|---|
-| Homebrew | 실행 파일 경로에 `/Cellar/`, `/homebrew/`, `/linuxbrew/` 중 하나 포함 | `brew upgrade sshtui` |
-| cargo | `~/.cargo/bin/` 하위 | `cargo install --git <저장소> --tag v<버전> --locked` |
-| install.sh 또는 수동 복사 | 그 외 홈 디렉터리 하위 | `main` 브랜치의 `install.sh`를 임시 디렉터리에 내려받은 뒤 `sh <tmp>/install.sh --bin-dir <원래 디렉터리>` |
-| .deb | `/usr/bin/` 또는 `/usr/local/bin/` 하위, `/var/lib/dpkg/status` 파일 존재, 지원 아키텍처 | 릴리스 에셋을 임시 디렉터리에 내려받은 뒤 `sudo dpkg -i <tmp>/sshtui_<arch>.deb` |
-| .rpm | 같은 경로, .deb 판정 조건 불충족, `/var/lib/rpm` 디렉터리 존재, 지원 아키텍처 | `sudo rpm -U <저장소>/releases/latest/download/sshtui-<arch>.rpm` |
-| 불명 | 위 조건에 해당하지 않거나 실행 파일 경로 조회 실패 | 실행 없음. `Download`에 릴리스 URL 표시 |
-
-- Windows는 `~/.cargo/bin` 하위면 cargo, 그 외는 불명으로 판정.
-- 패키지 아키텍처 매핑은 `.deb`의 경우 `x86_64` → `amd64`, `aarch64` → `arm64`, `arm` → `armhf`. `.rpm`은 `x86_64`와 `aarch64` 지원.
-- 각 단계의 프로그램과 인자를 셸의 명령 해석 없이 직접 전달. 직접 내려받는 파일은 실행마다 새로 만드는 임시 디렉터리에 저장.
-
-### 전제 조건
-
-아래 배포 구성 요소는 아직 미준비 상태. 저장소와 릴리스가 준비되기 전 확인 결과는 접속 불가. 설치 방식에 필요한 배포 요소가 준비되기 전 해당 업그레이드 명령은 실패.
-
-| 항목 | 필요 조건 |
-|---|---|
-| GitHub 저장소와 릴리스 | `hungryZoo/sshtui` 저장소와 `v<버전>` 태그의 릴리스 |
-| 설치 스크립트 | 저장소 `main` 브랜치의 `install.sh`, `--bin-dir` 옵션 지원 |
-| Homebrew formula | `sshtui` |
-| 릴리스 에셋 | 버전 없는 파일명 `sshtui_<arch>.deb`, `sshtui-<arch>.rpm` |
-
-저장소 주소의 정의 위치는 `Cargo.toml`의 `repository` 한 곳.
-
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 6. 네이티브 파일 다이얼로그
+## 6. 지원 플랫폼
 
-### 플랫폼별 동작
+### 릴리스 대상
 
-| 플랫폼 | 수단 | 숨김파일 표시 | 비고 |
+첫 릴리스에 포함할 대상 목록. macOS의 실행 확인 범위는 로컬 빌드의 `--version`.
+
+| Triple | 용도 | 정적 링크 | 확인 수준 |
 |---|---|---|---|
-| macOS | `osascript`의 `choose file ... with invisibles` | 강제 표시 요청 | `Select an SSH private key` 프롬프트 |
-| Windows | `rfd`의 `IFileOpenDialog`, `FOS_FORCESHOWHIDDEN` | 강제 표시 요청 | `set_show_hidden_files(true)` |
-| Linux와 그 외 Unix | `zenity --file-selection` 또는 `kdialog --getopenfilename` | 강제 표시 옵션 미사용, 화면에 안내 표시 | KDE에서는 설치된 `kdialog` 우선. 그 외에는 `zenity` 우선, 없으면 `kdialog` |
+| `aarch64-apple-darwin` | macOS Apple Silicon | 아니요 | 실행 확인 (macOS) |
+| `x86_64-apple-darwin` | macOS Intel | 아니요 | Rosetta에서 실행 확인 |
+| `x86_64-unknown-linux-musl` | Linux x86_64 | 예(musl) | 빌드만 확인 |
+| `aarch64-unknown-linux-musl` | Linux ARM64 | 예(musl) | 빌드만 확인 |
+| `armv7-unknown-linux-musleabihf` | Linux ARMv7, 32비트 hard-float | 예(musl) | 빌드만 확인 |
+| `arm-unknown-linux-musleabihf` | Linux ARMv6, 32비트 hard-float | 예(musl) | 빌드만 확인 |
+| `x86_64-pc-windows-msvc` | Windows x64 | C 런타임만 정적 구성 | 미검증, CI에서 빌드 예정 |
+| `aarch64-pc-windows-msvc` | Windows ARM64 | C 런타임만 정적 구성 | 미검증, CI에서 빌드 예정 |
 
-- `zenity` 안내 문구 `Hidden files: press Ctrl+H in the dialog`.
-- `kdialog` 안내 문구 `Hidden files: press Alt+. in the dialog`.
-- Linux에서 `rfd`와 XDG portal을 사용하지 않는 이유는 portal의 FileChooser에 숨김파일 표시 옵션이 없고 `rfd`의 Linux 숨김파일 옵션은 GTK3 백엔드에서만 지원되기 때문.
+Linux 4개 대상은 musl 정적 링크로 호스트 glibc 버전에 의존하지 않으며, macOS 2개 대상의 바이너리 최소 버전은 11.0.
 
-### 공통 동작
+### macOS
 
-- 시작 위치는 SSH 디렉터리. 디렉터리가 없으면 존재하는 가장 가까운 상위 디렉터리 사용.
-- 취소 시 폼으로 복귀하고 기존 입력값 유지. 다이얼로그 종료 후 TUI 화면 전체 다시 그리기.
+Apple Silicon에서는 `install.sh`가 Rosetta 셸에서도 하드웨어를 감지해 ARM64 자산 선택. Apple Silicon에서 두 대상의 `--version` 실행 확인(Intel 대상은 Rosetta).
 
-### 비활성 조건
+브라우저로 받은 압축 파일을 푼 뒤 격리 속성으로 실행이 차단되면, 자산 검증 후 바이너리에서 속성 제거.
 
-| 조건 | 표시 문구 |
-|---|---|
-| SSH 세션(`SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY` 중 하나 이상이 비어 있지 않음) | `Browse is unavailable over SSH (no local desktop session)` |
-| Linux와 그 외 Unix에서 `DISPLAY`와 `WAYLAND_DISPLAY` 모두 미설정 또는 빈 값 | `Browse is unavailable: no graphical session (DISPLAY and WAYLAND_DISPLAY are not set)` |
-| Linux와 그 외 Unix에서 `zenity`와 `kdialog` 모두 `PATH`에 없음 | `Browse is unavailable: install zenity or kdialog` |
+```bash
+xattr -d com.apple.quarantine ./sshtui
+```
+
+### Linux
+
+x86_64, ARM64, ARMv7, ARMv6 대상의 빌드와 정적 링크 확인. 실제 Linux 환경에서의 실행은 미검증.
+
+### Windows
+
+Windows의 선택적 기능에서 OpenSSH 클라이언트 설치 및 `PATH`의 `ssh.exe` 확인 필요. MSVC C 런타임의 정적 링크 설정으로 배포 바이너리에 VC++ 재배포 패키지 불필요.
+
+Windows 대상 타입 검사만 통과. 두 대상의 릴리스 빌드와 ZIP 생성, Windows에서의 실행과 PowerShell 설치는 미검증.
+
+### Debian과 Ubuntu (.deb)
+
+`amd64`, `arm64`, `armhf` 패키지 생성 확인(macOS). 실제 설치는 미검증. `armhf`에는 ARMv6 바이너리 포함. 설치 명령은 [Linux 패키지](#linux-패키지-deb--rpm) 참고.
+
+### Fedora와 RHEL 계열 (.rpm)
+
+`x86_64`, `aarch64` 패키지 생성 확인(macOS). 실제 설치는 미검증. 설치 명령은 [Linux 패키지](#linux-패키지-deb--rpm) 참고.
+
+### Raspberry Pi
+
+표의 대상명은 `.tar.gz` 자산의 triple. ARM용 빌드와 CPU 속성만 확인했으며 Raspberry Pi 실기기 실행과 패키지 설치는 미검증.
+
+| 모델 | SoC | CPU | 64비트 OS 자산 | 32비트 OS 자산 |
+|---|---|---|---|---|
+| Pi 1 A/B/A+/B+, Zero, Zero W | BCM2835 | ARM1176(ARMv6) | 해당 없음 | `arm-unknown-linux-musleabihf` 또는 `sshtui_armhf.deb` |
+| Pi 2 B v1.1 | BCM2836 | Cortex-A7(ARMv7) | 해당 없음 | `armv7-unknown-linux-musleabihf` 또는 `sshtui_armhf.deb` |
+| Pi 2 B v1.2, Pi 3 B/B+/A+ | BCM2837 계열 | Cortex-A53(ARMv8) | `aarch64-unknown-linux-musl` 또는 `sshtui_arm64.deb` | `armv7-unknown-linux-musleabihf` 또는 `sshtui_armhf.deb` |
+| Zero 2 W | RP3A0 | Cortex-A53(ARMv8) | `aarch64-unknown-linux-musl` 또는 `sshtui_arm64.deb` | `armv7-unknown-linux-musleabihf` 또는 `sshtui_armhf.deb` |
+| Pi 4 B, Pi 400, CM4 | BCM2711 | Cortex-A72(ARMv8) | `aarch64-unknown-linux-musl` 또는 `sshtui_arm64.deb` | `armv7-unknown-linux-musleabihf` 또는 `sshtui_armhf.deb` |
+| Pi 5, Pi 500, CM5 | BCM2712 | Cortex-A76(ARMv8.2) | `aarch64-unknown-linux-musl` 또는 `sshtui_arm64.deb` | `armv7-unknown-linux-musleabihf` 또는 `sshtui_armhf.deb` |
+
+`install.sh`는 `uname -m`이 `armv6l`이면 ARMv6, `armv7l` 또는 `armv8l`이면 ARMv7 자산 선택. Pi 4 또는 Pi 5에서 32비트 사용자 공간과 64비트 커널을 함께 쓰는 경우에도 `uname -m`이 `aarch64`이면 정적 ARM64 자산 선택. `.deb`는 운영체제의 패키지 아키텍처 기준으로 선택.
+
+### 지원하는 셸
+
+설치 열은 스크립트를 호출하는 셸 기준. macOS의 임시 환경에서 `sh`와 `dash`로 설치를 확인했으며, 나머지 호출 셸과 Windows 설치 스크립트 실행은 미검증. 히스토리 열은 [기본 후보 파일](#셸-히스토리-가져오기) 기준이며 실제 사용자 파일은 미검증.
+
+| 셸 | 설치 명령 | 히스토리 후보 |
+|---|---|---|
+| `sh`, dash | `curl … \| sh` | 기본 전용 경로 없음. `HISTFILE` 또는 `SSHTUI_HISTORY_FILE`로 일반 줄 형식 파일 지정 가능 |
+| Bash | `curl … \| sh` | 지원(일반 줄 형식) |
+| zsh | `curl … \| sh` | 지원(일반 줄과 확장 형식) |
+| fish | `curl … \| sh` | 지원(fish 형식) |
+| ksh | `curl … \| sh` | 지원(`.sh_history`, NUL 구분 포함) |
+| mksh | `curl … \| sh` | 지원(`.mksh_history`) |
+| csh, tcsh | `curl … \| sh` | 지원(`.history`) |
+| Nushell | `curl … \| sh` | 텍스트 형식만 지원. SQLite 형식 미지원 |
+| Windows PowerShell 5.1, Windows의 PowerShell 7 | `irm … \| iex` | 지원(PSReadLine) |
+| macOS와 Linux의 PowerShell | `curl … \| sh`(curl 실행 파일 사용) | 지원(PSReadLine) |
+| `cmd.exe` | `powershell -NoProfile …`로 설치 명령 호출 | 기본 후보와 파일 형식 지원 없음 |
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
@@ -634,7 +939,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 
 | 구분 | 항목 | 상태 |
 |---|---|---|
-| 자동 | 단위 테스트 551개(`cargo test --offline`, 라이브러리 544개와 실행 파일 7개). config, 입력 검증, SSH 인자와 실행, 키 판별과 설치, 화면 상태와 렌더링, 마우스 클릭 영역, 업데이트, 호스트 키 삭제, 마지막 접속 기록, 셸 히스토리 해석, 표시 언어 | 통과 (macOS) |
+| 자동 | 단위 테스트 555개(`cargo test --offline`, 라이브러리 548개와 실행 파일 7개). config, 입력 검증, SSH 인자와 실행, 키 판별과 설치, 화면 상태와 렌더링, 마우스 클릭 영역, 업데이트, 호스트 키 삭제, 마지막 접속 기록, 셸 히스토리 해석과 후보 파일 순서, 표시 언어 | 통과 (macOS) |
 | 자동 | `cargo fmt --check`, `cargo clippy --offline --all-targets -- -D warnings` | 통과 |
 | 자동 | `cargo check --target x86_64-pc-windows-msvc`, `--target x86_64-unknown-linux-gnu` | 통과 (타입 검사만) |
 | 수동 | 임시 ssh 디렉터리에서 목록, 새 접속 저장, 편집, 삭제, 외부 변경 감지, 불일치 알림, 1회 접속의 ssh 실행과 종료 코드 | 확인 (macOS, tmux) |
@@ -642,8 +947,8 @@ TrueColor 모드의 호버 대상과 색 변화.
 | 수동 | 마우스 범위는 tmux 창에 SGR 마우스 시퀀스를 입력해 확인한 호스트 줄 클릭과 더블 클릭 접속, 휠, 키 안내, 필터 바, 필드 클릭, 팝업 바깥 클릭, 누른 곳과 다른 곳에서 뗀 경우의 취소, 종료 뒤 남는 입력 없음, `SSHTUI_NO_MOUSE` | 확인 (macOS, tmux) |
 | 수동 | 디자인 목업(docs/design) 6장과의 대조: 목업과 같은 표본 호스트 12개, 100x28 창에서 목록, 필터, 새 접속, 편집 오류, 키 목록, 변경 확인 화면의 배치와 문구, 트루컬러 색 코드(배경, 강조, 삭제 줄 배경 등), COLORTERM 미설정 시 16색 전환 | 확인 (macOS, tmux) |
 | 수동 | 업데이트 확인 범위는 `latest=9.9.9`일 때의 알림과 `Update sshtui` 팝업, 24시간 이내 캐시 유지, 오래된 캐시의 시도 시각 선기록, `SSHTUI_NO_UPDATE_CHECK`, `--check-update` 종료 코드 `11`(릴리스 없음, `curl` 없음), `Update sshtui` 팝업에서 `Enter` 후 터미널 복원과 명령 실행, 실패 시 종료 코드 `1` | 확인 (macOS, tmux, 임시 HOME) |
-| 미검증 | 실제 릴리스 조회 성공과 새 버전 감지(저장소와 릴리스가 아직 없음) | 미검증 |
-| 미검증 | 설치 방식별 업그레이드 명령의 실제 성공(Homebrew, cargo, install.sh, .deb, .rpm) | 미검증 |
+| 미검증 | 게시된 릴리스 조회 성공과 새 버전 감지 | 미검증 |
+| 미검증 | 설치 방식별 업그레이드 명령의 실제 성공(Homebrew, cargo, install.sh, install.ps1, .deb, .rpm) | 미검증 |
 | 미검증 | 네이티브 다이얼로그의 실제 표시와 숨김파일 표시(macOS, Windows, Linux) | 미검증 |
 | 미검증 | 실제 서버 접속 성공(암호, 패스프레이즈, 호스트 키 확인 흐름) | 미검증 |
 | 미검증 | 호스트 키가 실제로 바뀐 서버에서 삭제 후 재접속 | 미검증 |
@@ -663,12 +968,19 @@ TrueColor 모드의 호버 대상과 색 변화.
 | 미검증 | 실제 마우스 장치와 터미널 에뮬레이터(Terminal, iTerm2, Windows Terminal 등)에서의 클릭과 휠, 이동 이벤트 보고와 호버 애니메이션의 체감 품질, 키 안내 호버의 버튼 표현 체감 | 미검증 |
 | 미검증 | Windows와 Linux에서의 실행(링크, 터미널 동작, 종료 코드 전달) | 미검증 |
 | 미검증 | zenity의 `Ctrl+H`, kdialog의 `Alt+.` 단축키 안내 문구의 정확성 | 문서 미확인 |
+| 수동 | 로컬 릴리스 빌드. `scripts/build-all.sh`로 6개 대상 빌드(zig 0.16.0, cargo-zigbuild 0.22.3). `file`로 Linux 4개 대상의 정적 링크 확인. ARM 속성 섹션의 `Tag_CPU_arch`는 `armv7-unknown-linux-musleabihf`가 v7, `arm-unknown-linux-musleabihf`가 v6. macOS 2개 대상의 `minos`는 11.0. arm64 바이너리의 `codesign -v` 통과 | 확인 (macOS) |
+| 수동 | 로컬 macOS 바이너리 실행. `aarch64-apple-darwin`의 `--version` 직접 실행, `x86_64-apple-darwin`의 `--version`은 Rosetta에서 실행 | 확인 (macOS) |
+| 수동 | 로컬 패키징. `scripts/package-all.sh`로 `dist/`에 19개 자산 생성(tar.gz 6개, deb 3개와 별칭 3개, rpm 2개와 별칭 2개, `install.sh`, `install.ps1`, `SHA256SUMS`). 체크섬 18개 항목 검증 통과. `.deb`의 `control` 필드(`Package`, `Architecture: armhf`, `Depends: openssh-client`)와 파일 배치, `.rpm` 파일 목록 확인 | 확인 (macOS) |
+| 수동 | 로컬 설치 스크립트. `SSHTUI_DOWNLOAD_BASE=file://.../dist`와 임시 `HOME`으로 `dash install.sh`와 `sh install.sh` 실행. 지정한 디렉터리와 기본 `~/.local/bin` 설치, 설치 후 `--version` 일치, zsh의 `export`와 fish의 `fish_add_path` 및 tcsh의 `set path` 안내 확인. 체크섬 불일치 시 종료 코드 1 및 설치 없음. 기준 URL만 주고 버전을 생략하면 오류 | 확인 (macOS) |
+| 수동 | Homebrew 포뮬러. `scripts/update-formula.sh`가 생성한 파일의 Ruby 구문 검사 통과 | 확인 (macOS) |
+| 미검증 | Windows 릴리스 빌드, ZIP 생성, `install.ps1` 실행. 로컬에 PowerShell 없음. `cargo check --target` 타입 검사만 통과 | 미검증 |
+| 미검증 | 실제 Linux에서 바이너리 실행 및 `.deb`와 `.rpm` 설치, Raspberry Pi 실기기 실행 | 미검증 |
+| 미검증 | GitHub Actions의 `ci.yml`, `release.yml` 실행. 로컬 `shellcheck` 부재로 미실행 | 미검증 |
+| 미검증 | 게시된 릴리스로 `curl … \| sh`, `irm … \| iex`, Homebrew 설치, `releases/latest` 경로와 출처 증명 검증 | 미검증 |
 
-<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
+### 수동 확인 절차
 
-## 8. 수동 확인 절차
-
-### 임시 SSH 디렉터리 확인
+#### 임시 SSH 디렉터리 확인
 
 아래 명령은 `HISTFILE=/dev/null bash --noprofile --norc`로 시작한 전용 Bash 세션 기준. 이어지는 모든 확인에 임시 `HOME`과 `SSHTUI_SSH_DIR` 사용. sshtui가 읽는 히스토리는 임시 표본 파일로 고정하고, 예제 config에는 키와 호스트 키 파일의 절대 경로 지정. `sshtui` 실행 파일은 `HOME` 변경 전부터 `PATH`에 있어야 함.
 
@@ -742,7 +1054,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 
     `diff`에는 호스트 키 한 줄 삭제만 표시되고, `cmp`는 출력 없이 종료되는 것이 기대 결과.
 
-### 목록과 접속 폼 확인
+#### 목록과 접속 폼 확인
 
 [임시 SSH 디렉터리 확인](#임시-ssh-디렉터리-확인)의 Bash 세션에서 진행. 이전 확인에서 `dev`를 지웠다면 목록 확인에는 `stage` 사용.
 
@@ -762,7 +1074,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 
 6. `Nickname`에 `form-test`, `Address`에 `127.0.0.1` 입력. `Key file` 입력칸에서 `↓`로 키 선택 후 입력값과 `›` 확인. `Tab`으로 `Key login`에 이동해 선택한 키의 `●` 확인. `Password`에서 `Space`로 전환해 폭이 충분한 100x28에서 `make sure key login already works` 확인. `Key login`도 `Space`로 전환해 `On enter`의 `Key` 단계 확인. 80x24에서 필드, 두 키 줄, 체크 항목과 `On enter` 사이의 빈 줄 생략 확인. 저장 없이 닫기.
 
-### 키 로그인 설정 확인
+#### 키 로그인 설정 확인
 
 [목록과 접속 폼 확인](#목록과-접속-폼-확인)의 임시 키와 환경 재사용. 아래 절차는 가짜 `ssh`에 설치용 표준 입력을 전달해 임시 원격 홈에서 확인하는 방식.
 
@@ -808,7 +1120,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 3. `touch "$fixture_root/fail-install"` 후 같은 가짜 `ssh` 실행 명령으로 재실행. `kl`의 편집 폼에서 `Key login`만 체크하고 `Enter`. 설치 결과 확인 후 `Enter`로 복귀하면 목록에 `Key install failed for kl (ssh exit code 255)` 표시. 다시 편집해 `Password`를 해제하고 `Enter`로 해당 줄의 삭제 diff 확인.
 4. 실제 키 로그인까지 확인하려면 비밀번호 인증을 허용하는 POSIX `sh` 테스트 서버와 임시 SSH 디렉터리의 유효한 테스트 키 쌍 필요. 원래 `PATH`에서 `sshtui`를 실행해 닉네임을 비운 상태로 서버 주소와 테스트 키의 절대 경로를 지정하고 `Key login`과 `Password`를 체크. 설치 중 서버 비밀번호 입력, 설치 결과에서 `Enter`, 뒤이은 키 로그인 확인. 이 단계는 테스트 서버 계정의 `authorized_keys`를 변경.
 
-### 히스토리와 표시 언어 확인
+#### 히스토리와 표시 언어 확인
 
 같은 임시 환경의 `web` 호스트와 키 표본 2개 재사용.
 
@@ -830,7 +1142,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 3. `env -u SSHTUI_LANG -u LC_ALL -u LC_MESSAGES -u LANG sshtui` 실행. 시스템 로캘이 `ko-KR`인 환경에서 한국어 표시 확인. `env -u SSHTUI_LANG -u LC_ALL -u LC_MESSAGES LANG=en_US.UTF-8 sshtui`로 영어, `SSHTUI_LANG=ko LANG=en_US.UTF-8 sshtui`로 한국어 우선 확인.
 4. 100x28, 96x26, 80x24에서 한국어 목록, `n` 폼, `F2` 키 목록 팝업, `i` 히스토리 팝업, `d` 삭제 확인 화면 점검. 세로 구분선과 팝업 테두리의 열 일치 및 화면 폭 이내 표시 확인. 폭 96에서 목록에 필터를 적용하고 키 안내가 `esc 필터 해제`까지 표시되는지 확인.
 
-### 마우스 확인
+#### 마우스 확인
 
 실제 터미널에서 [임시 SSH 디렉터리 확인](#임시-ssh-디렉터리-확인)의 설정과 `ssh_dir` 재사용.
 
@@ -843,7 +1155,7 @@ TrueColor 모드의 호버 대상과 색 변화.
 7. 캡처 중에는 일반 드래그로 터미널 텍스트가 선택되지 않는지 확인. 터미널에 맞춰 `Shift` 또는 `Option`을 누른 채 드래그해 텍스트 선택 확인. `Esc`로 종료 후 셸에 마우스 입력 문자가 남지 않는지 확인.
 8. `SSHTUI_NO_MOUSE=1 SSHTUI_SSH_DIR="$ssh_dir" sshtui` 실행. 호스트 줄 클릭으로 TUI 선택이 바뀌지 않고 터미널의 기본 드래그로 텍스트가 선택되는지 확인. `Esc`로 종료.
 
-### 업데이트 확인
+#### 업데이트 확인
 
 위 절차에서 만든 임시 SSH 디렉터리(`ssh_dir`) 재사용. 아래 Bash 명령은 같은 셸에서 순서대로 실행하며, 각 TUI는 확인 후 `Esc`로 종료.
 
@@ -905,12 +1217,16 @@ TrueColor 모드의 호버 대상과 색 변화.
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
 
-## 9. 개발
+## 8. 개발
 
-### 모듈 구성
+### 저장소 구성
 
 | 경로 | 역할 |
 |---|---|
+| `install.sh`, `install.ps1` | 사용자별 설치 스크립트 |
+| `scripts/` | 릴리스 빌드, 패키징 및 체크섬, Homebrew 포뮬러 생성 및 탭 갱신 |
+| `.github/workflows/` | CI와 릴리스 빌드 및 게시 |
+| `.github/release-notes/` | 태그별 릴리스 노트 |
 | `src/main.rs`, `src/lib.rs` | CLI 진입점, 라이브러리 모듈 선언 |
 | `src/app/` | 화면 상태, 키 입력, 폼과 변경 확인 |
 | `src/app/import.rs` | 저장 호스트 대조와 히스토리 후보 팝업 상태 |
@@ -942,9 +1258,31 @@ cargo clippy --offline --all-targets -- -D warnings
 cargo test --offline
 ```
 
+### 릴리스 만드는 방법
+
+1. `Cargo.toml`의 버전과 그 버전에 맞는 `.github/release-notes/v<version>.md` 준비. 노트의 첫 제목은 릴리스 제목으로 사용. 노트 파일이 없으면 GitHub 자동 생성 노트 사용.
+2. macOS에서 로컬 자산을 만들 때는 Rust 대상 툴체인과 Zig, `cargo-zigbuild`, `cargo-deb`, `cargo-generate-rpm` 준비 후 아래 순서로 실행. `scripts/meta.sh`가 `Cargo.toml`에서 이름과 버전을 읽고, `scripts/package-all.sh`가 빌드된 대상만 `dist/`에 패키징.
+
+   ```bash
+   scripts/build-all.sh
+   scripts/package-all.sh
+   ```
+
+3. 배포 담당자가 `Cargo.toml`의 버전과 같은 `v<version>` 태그를 푸시하면 [릴리스 워크플로](.github/workflows/release.yml) 실행. 필요 시 해당 태그에서 수동 실행으로 재시도.
+4. 워크플로에서 Linux, macOS, Windows 대상 빌드 및 플랫폼별 바이너리 검사, 아카이브와 패키지 생성. 게시 작업에서 모은 자산 목록과 `SHA256SUMS` 확인, 초안 준비, 체크섬 목록으로 빌드 출처 증명 생성, 자산 업로드 및 목록 대조 후 초안 공개.
+5. 게시 후 `HOMEBREW_TAP_TOKEN`이 설정되어 있으면 워크플로에서 `hungryZoo/homebrew-tap`의 `Formula/sshtui.rb` 갱신. 토큰이 없으면 배포 담당자가 탭 쓰기 권한이 있는 로컬 `gh` 로그인으로 `scripts/post-release.sh` 실행. 인자를 생략하면 `Cargo.toml`의 버전 사용. 두 경로 모두 `scripts/update-formula.sh`가 릴리스 `SHA256SUMS`로 포뮬러 생성.
+
+[CI 워크플로](.github/workflows/ci.yml)는 푸시와 풀 리퀘스트에서 세 운영체제의 Rust 검사, 설치 스크립트 구문 검사, Linux x86_64 패키징과 로컬 설치 검사 수행 예정.
+
 ### 작업 방식
 
 - 공통 규칙은 `AGENTS.md`, 작업별 지시문은 `tasks/`, 실행기는 `tasks/run.sh`.
 - 테스트는 실제 `~/.ssh`를 사용하지 않고 `tempfile`의 임시 디렉터리를 사용. 코드에서는 `SshPaths`로 경로를 주입하고 CLI를 실행하는 확인에서는 `SSHTUI_SSH_DIR`로 임시 경로를 지정.
+
+<p align="right"><a href="#table-of-contents">↑ back to top</a></p>
+
+## 9. 라이선스
+
+MIT 라이선스. 전문은 [LICENSE](LICENSE) 참고.
 
 <p align="right"><a href="#table-of-contents">↑ back to top</a></p>
