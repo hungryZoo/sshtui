@@ -19,6 +19,12 @@ pub trait Backend {
     fn config_prefix(&self) -> Vec<OsString>;
     /// Loads the current SSH configuration.
     fn load_config(&self) -> Result<ConfigSet, String>;
+    /// Returns the alias that was connected most recently, if recorded.
+    fn last_host(&self) -> Option<String> {
+        None
+    }
+    /// Records that a saved alias is about to be connected. Failures are ignored.
+    fn record_connection(&self, _alias: &str) {}
     /// Resolves the settings SSH would use for an alias.
     fn effective(&self, alias: &str) -> Result<EffectiveConfig, String>;
     /// Returns the available private keys and their public metadata.

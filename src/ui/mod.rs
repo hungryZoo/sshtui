@@ -133,7 +133,7 @@ pub fn render<B: Backend>(
                 &path,
                 theme.muted,
             );
-            overlays::confirm(frame, state, paths, body, theme);
+            overlays::confirm(frame, state, paths, body, theme, &mut hits);
             (true, overlays::confirm_help(state))
         }
     };
@@ -179,13 +179,24 @@ fn render_help<B: Backend>(
     let last = hints.len().saturating_sub(1);
     let mut prefix = last;
     if last >= 2 && pair_width(0, &hints[0]) + gap + pair_width(last, &hints[last]) <= available {
+        // Keep filtered-list hints stable as the selection moves between host and new rows.
+        let reserved = if matches!(app.mode(), Mode::List)
+            && app.new_row_selected()
+            && !app.is_filtering()
+            && !app.filter().value().is_empty()
+        {
+            "connect".len() - "new".len()
+        } else {
+            0
+        };
         let mut total = hints
             .iter()
             .enumerate()
             .map(|(index, hint)| pair_width(index, hint))
             .sum::<usize>()
-            + last * gap;
-        while total > available {
+            + last * gap
+            + reserved;
+        while total > available && prefix > 1 {
             prefix -= 1;
             total -= pair_width(prefix, &hints[prefix]) + gap;
         }

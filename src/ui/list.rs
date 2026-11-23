@@ -13,13 +13,12 @@ use super::{
     intensity, labeled_lines, styled_wrapped,
 };
 
-const fn list_hints(escape: &'static str) -> [KeyHint; 8] {
+const fn list_hints(enter: &'static str, escape: &'static str) -> [KeyHint; 7] {
     [
-        ("enter", "connect", Some(KeyCode::Enter)),
-        ("n", "new", Some(KeyCode::Char('n'))),
+        ("enter", enter, Some(KeyCode::Enter)),
         ("e", "edit", Some(KeyCode::Char('e'))),
         ("d", "delete", Some(KeyCode::Char('d'))),
-        ("x", "forget", Some(KeyCode::Char('x'))),
+        ("x", "forget(known_host)", Some(KeyCode::Char('x'))),
         ("/", "filter", Some(KeyCode::Char('/'))),
         ("r", "reload", Some(KeyCode::Char('r'))),
         ("esc", escape, Some(KeyCode::Esc)),
@@ -27,8 +26,11 @@ const fn list_hints(escape: &'static str) -> [KeyHint; 8] {
 }
 
 pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
-    const UNFILTERED: &[KeyHint] = &list_hints("quit");
-    const FILTERED: &[KeyHint] = &list_hints("clear filter");
+    const CONNECT: &[KeyHint] = &list_hints("connect", "quit");
+    const CONNECT_FILTERED: &[KeyHint] = &list_hints("connect", "clear filter");
+    const NEW: &[KeyHint] = &list_hints("new", "quit");
+    const NEW_FILTERED: &[KeyHint] = &list_hints("new", "clear filter");
+
     if app.is_filtering() {
         (
             true,
@@ -39,12 +41,14 @@ pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
             ],
         )
     } else {
+        let new = app.new_row_selected();
         (
-            app.selection().is_some(),
-            if app.filter().value().is_empty() {
-                UNFILTERED
-            } else {
-                FILTERED
+            new || app.selection().is_some(),
+            match (new, app.filter().value().is_empty()) {
+                (true, true) => NEW,
+                (true, false) => NEW_FILTERED,
+                (false, true) => CONNECT,
+                (false, false) => CONNECT_FILTERED,
             },
         )
     }
@@ -112,11 +116,25 @@ pub(super) fn render<B: Backend>(
         for rect in divider.rows() {
             put(frame, rect, "│", theme.rule);
         }
+        let detail = right_of(content, width + 3);
         if let Some(host) = app
             .selection()
             .and_then(|index| app.filtered_hosts().nth(index))
         {
-            render_detail(frame, app, host, right_of(content, width + 3), theme);
+            render_detail(frame, app, host, detail, theme);
+        } else if app.new_row_selected() {
+            put(frame, row(detail, 0), "New connection", bold(theme.text));
+            let description = below(detail, 1);
+            render_lines(
+                frame,
+                description,
+                styled_wrapped(
+                    "Add a host or connect once without saving.",
+                    description.width,
+                    description.height,
+                    theme.muted,
+                ),
+            );
         }
     }
 }
@@ -171,39 +189,71 @@ fn render_hosts<B: Backend>(
     hover: HoverFrame<'_>,
 ) {
     let hosts = app.filtered_hosts();
-    if hosts.len() == 0 {
-        put(frame, row(area, 0), "No matching hosts", theme.muted);
-        return;
-    }
+    let new_index = hosts.len().max(1);
     let name_width = app
         .filtered_hosts()
         .map(|host| host.entry.name.width().saturating_add(2))
         .max()
         .unwrap_or(0)
         .clamp(16, 28) as u16;
-    let selection = app.selection();
-    let mut rows = visible_rows(area, hosts.len(), selection).peekable();
+    let selection = app
+        .selection()
+        .or_else(|| app.new_row_selected().then_some(new_index));
+    let mut rows = visible_rows(area, new_index + 1, selection).peekable();
     let Some(&(first, _)) = rows.peek() else {
         return;
     };
     let filter = app.filter().value().to_lowercase();
-    for ((index, rect), host) in rows.zip(hosts.skip(first)) {
+    let mut hosts = hosts.skip(first);
+    for (index, rect) in rows {
         let selected = selection == Some(index);
-        let t = intensity(hover, HoverKey::HostRow(index));
-        frame
-            .buffer_mut()
-            .set_style(rect, theme.hover_row(selected, t));
-        if selected {
+        if index == new_index {
+            let t = intensity(hover, HoverKey::NewRow);
+            render_row_selection(frame, rect, selected, t, theme);
+            let label = "+ New connection";
+            let (name, summary) = row_columns(rect, name_width);
             put(
                 frame,
-                left(rect, 1),
-                "›",
-                theme.selected(bold(theme.accent), true),
+                name,
+                label,
+                theme.hover_text(theme.selected(bold(theme.accent), selected), t),
             );
+            let padding = u16::from(label.width() == usize::from(name.width) && summary.width > 1);
+            put(
+                frame,
+                right_of(summary, padding),
+                "n",
+                theme.selected(PLAIN, selected).patch(theme.hover_muted(t)),
+            );
+            hits.add(rect, ClickTarget::NewRow);
+        } else if let Some(host) = hosts.next() {
+            let t = intensity(hover, HoverKey::HostRow(index));
+            render_row_selection(frame, rect, selected, t, theme);
+            render_host(frame, rect, host, (selected, t), name_width, &filter, theme);
+            hits.add(rect, ClickTarget::HostRow(index));
+        } else {
+            put(frame, rect, "No matching hosts", theme.muted);
         }
-        render_host(frame, rect, host, (selected, t), name_width, &filter, theme);
-        hits.add(rect, ClickTarget::HostRow(index));
     }
+}
+
+fn render_row_selection(frame: &mut Frame, area: Rect, selected: bool, t: f32, theme: &Theme) {
+    frame
+        .buffer_mut()
+        .set_style(area, theme.hover_row(selected, t));
+    if selected {
+        put(
+            frame,
+            left(area, 1),
+            "›",
+            theme.selected(bold(theme.accent), true),
+        );
+    }
+}
+
+fn row_columns(area: Rect, name_width: u16) -> (Rect, Rect) {
+    let content = right_of(left(area, area.width.saturating_sub(1)), 2);
+    (left(content, name_width), right_of(content, name_width))
 }
 
 fn render_host(
@@ -215,9 +265,7 @@ fn render_host(
     filter: &str,
     theme: &Theme,
 ) {
-    let content = right_of(left(area, area.width.saturating_sub(1)), 2);
-    let names = left(content, name_width);
-    let summary = right_of(content, name_width);
+    let (names, summary) = row_columns(area, name_width);
     let readonly = "read-only";
     let width = readonly.len() as u16;
     let marker_width = if host.read_only && summary.width >= width {

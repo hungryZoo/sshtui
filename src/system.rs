@@ -11,6 +11,7 @@ use crate::known_hosts::{self, ForgetPlan};
 use crate::paths::SshPaths;
 use crate::ssh::args::config_file_args;
 use crate::ssh::effective::{EffectiveConfig, EffectiveResolver, SystemResolver};
+use crate::state;
 use crate::update::UpdatePlan;
 
 /// Backend that talks to the real file system, ssh and the native dialog.
@@ -19,6 +20,7 @@ pub struct SystemBackend {
     ssh: PathBuf,
     picker: Box<dyn FilePicker>,
     update_plan: Option<UpdatePlan>,
+    state_file: Option<PathBuf>,
 }
 
 impl SystemBackend {
@@ -29,12 +31,19 @@ impl SystemBackend {
             ssh,
             picker,
             update_plan: None,
+            state_file: None,
         }
     }
 
     /// Sets the update plan available for this session.
     pub fn with_update_plan(mut self, plan: Option<UpdatePlan>) -> Self {
         self.update_plan = plan;
+        self
+    }
+
+    /// Sets the optional file for remembering the last connected alias.
+    pub fn with_state_file(mut self, path: Option<PathBuf>) -> Self {
+        self.state_file = path;
         self
     }
 
@@ -55,6 +64,16 @@ impl Backend for SystemBackend {
 
     fn load_config(&self) -> Result<ConfigSet, String> {
         config::load(&self.paths).map_err(|error| error.to_string())
+    }
+
+    fn last_host(&self) -> Option<String> {
+        self.state_file.as_deref().and_then(state::read_last_host)
+    }
+
+    fn record_connection(&self, alias: &str) {
+        if let Some(path) = &self.state_file {
+            let _ = state::write_last_host(path, alias);
+        }
     }
 
     fn effective(&self, alias: &str) -> Result<EffectiveConfig, String> {
@@ -134,6 +153,34 @@ mod tests {
     fn write_config(backend: &SystemBackend, contents: &[u8]) {
         fs::create_dir_all(backend.paths().ssh_dir()).unwrap();
         fs::write(backend.paths().config_file(), contents).unwrap();
+    }
+
+    #[test]
+    fn last_host_round_trips_using_the_injected_state_file() {
+        let (temp, backend) = fixture();
+        let path = temp.path().join("state").join("last-host");
+        let backend = backend.with_state_file(Some(path.clone()));
+        assert_eq!(backend.last_host(), None);
+        backend.record_connection("web");
+        assert_eq!(backend.last_host().as_deref(), Some("web"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "web\n");
+        backend.record_connection("db");
+        assert_eq!(backend.last_host().as_deref(), Some("db"));
+    }
+
+    #[test]
+    fn backend_without_a_state_file_has_no_last_host_and_creates_no_files() {
+        let (temp, backend) = fixture();
+        let files = || {
+            fs::read_dir(temp.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>()
+        };
+        let before = files();
+        backend.record_connection("web");
+        assert_eq!(backend.last_host(), None);
+        assert_eq!(files(), before);
     }
 
     #[test]

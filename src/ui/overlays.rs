@@ -6,13 +6,13 @@ use ratatui::widgets::{Block, BorderType, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    ClickTarget, ConfirmKind, ConfirmState, KeyPickerState, NoticeState, UpdateState,
+    ClickTarget, ConfirmChoice, ConfirmKind, ConfirmState, KeyPickerState, NoticeState, UpdateState,
 };
 use crate::config::{DiffHunk, DiffLine, DiffTag, backup_file_name};
 use crate::paths::SshPaths;
 
 use super::layout::{
-    below, header_line, inset, left, put, put_right, render_lines, right_of, row, rule,
+    below, clip_cells, header_line, inset, left, put, put_right, render_lines, right_of, row, rule,
     visible_rows,
 };
 use super::theme::bold;
@@ -22,32 +22,55 @@ use super::{
 };
 
 pub(super) fn confirm_help(state: &ConfirmState) -> &'static [KeyHint] {
-    match state.kind() {
-        ConfirmKind::Delete => &[
-            ("y", "delete", Some(KeyCode::Char('y'))),
-            ("n", "back to list", Some(KeyCode::Char('n'))),
-            ("↑↓", "scroll", None),
-        ],
-        ConfirmKind::Save => &[
+    const CANCEL_DELETE: &[KeyHint] = &destructive_help("cancel", "delete");
+    const DELETE: &[KeyHint] = &destructive_help("delete", "delete");
+    const CANCEL_FORGET: &[KeyHint] = &destructive_help("cancel", "forget");
+    const FORGET: &[KeyHint] = &destructive_help("forget", "forget");
+
+    match (state.kind(), state.choice()) {
+        (ConfirmKind::Delete, Some(ConfirmChoice::Cancel)) => CANCEL_DELETE,
+        (ConfirmKind::Delete, _) => DELETE,
+        (ConfirmKind::Forget, Some(ConfirmChoice::Cancel)) => CANCEL_FORGET,
+        (ConfirmKind::Forget, _) => FORGET,
+        (ConfirmKind::Save, _) => &[
             ("y", "save", Some(KeyCode::Char('y'))),
             ("n", "back to form", Some(KeyCode::Char('n'))),
             ("↑↓", "scroll", None),
         ],
-        ConfirmKind::Forget => &[
-            ("y", "forget", Some(KeyCode::Char('y'))),
-            ("n", "back to list", Some(KeyCode::Char('n'))),
-            ("↑↓", "scroll", None),
-        ],
     }
+}
+
+const fn destructive_help(enter: &'static str, proceed: &'static str) -> [KeyHint; 5] {
+    [
+        ("enter", enter, Some(KeyCode::Enter)),
+        ("←→", "choose", None),
+        ("y", proceed, Some(KeyCode::Char('y'))),
+        ("n", "back to list", Some(KeyCode::Char('n'))),
+        ("↑↓", "scroll", None),
+    ]
 }
 
 pub(super) fn confirm(
     frame: &mut Frame,
     state: &ConfirmState,
     paths: &SshPaths,
-    body: Rect,
+    mut body: Rect,
     theme: &Theme,
+    hits: &mut HitMap,
 ) {
+    if let (Some(choice), Some(question)) = (
+        state.choice(),
+        state.question(&paths.abbreviate_home(state.path())),
+    ) {
+        let area = row(body, body.height.saturating_sub(1));
+        let proceed = if state.kind() == ConfirmKind::Forget {
+            "Forget"
+        } else {
+            "Delete"
+        };
+        render_question(frame, area, &question, proceed, choice, theme, hits);
+        body.height = body.height.saturating_sub(1);
+    }
     rule(frame, row(body, 0), theme.rule);
     let mut added = 0;
     let mut removed = 0;
@@ -89,6 +112,51 @@ pub(super) fn confirm(
         );
     }
     render_diff(frame, state.hunks(), state.scroll(), diff, theme);
+}
+
+fn render_question(
+    frame: &mut Frame,
+    area: Rect,
+    question: &str,
+    proceed: &str,
+    choice: ConfirmChoice,
+    theme: &Theme,
+    hits: &mut HitMap,
+) {
+    const GAP: u16 = 3;
+    const CANCEL: &str = "Cancel";
+    let labels_width = (CANCEL.width() + proceed.width()) as u16;
+    let padding = u16::from(area.width >= labels_width + 2);
+    let choices_width = labels_width + 2 * padding;
+    let choice_gap = area.width.saturating_sub(choices_width).min(GAP);
+    let room = area.width.saturating_sub(choices_width + choice_gap + GAP);
+    let prompt = clip_cells(question, room);
+    let prompt_width = prompt.width() as u16;
+    put(frame, left(area, prompt_width), &prompt, theme.text);
+    let mut buttons = right_of(area, prompt_width + if prompt_width == 0 { 0 } else { GAP });
+    let badge = theme.badge(true);
+    for (answer, label, code, highlight) in [
+        (ConfirmChoice::Cancel, CANCEL, 'n', badge),
+        (
+            ConfirmChoice::Proceed,
+            proceed,
+            'y',
+            badge.bg(theme.error.fg.unwrap_or(ratatui::style::Color::Red)),
+        ),
+    ] {
+        let selected = choice == answer;
+        let pad = if selected && padding != 0 { " " } else { "" };
+        let text = format!("{pad}{label}{pad}");
+        let rect = left(buttons, text.width() as u16);
+        put(
+            frame,
+            rect,
+            &text,
+            if selected { highlight } else { theme.muted },
+        );
+        hits.add(rect, ClickTarget::Key(KeyCode::Char(code)));
+        buttons = right_of(buttons, rect.width + choice_gap);
+    }
 }
 
 fn render_diff(frame: &mut Frame, hunks: &[DiffHunk], mut skip: usize, area: Rect, theme: &Theme) {

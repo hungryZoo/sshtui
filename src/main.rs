@@ -8,7 +8,7 @@ use sshtui::ssh::exec::{find_ssh, run_interactive};
 use sshtui::system::SystemBackend;
 use sshtui::ui::ColorMode;
 use sshtui::update::{self, CURRENT_VERSION, CheckOutcome, InstallMethod, UpdatePlan};
-use sshtui::{dialog, tui};
+use sshtui::{dialog, state, tui};
 
 const NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -141,8 +141,9 @@ fn run() -> anyhow::Result<ExitCode> {
 
     let plan = update::plan();
     update::maybe_spawn_check();
-    let backend =
-        SystemBackend::new(paths, ssh.clone(), dialog::system_picker()).with_update_plan(plan);
+    let backend = SystemBackend::new(paths, ssh.clone(), dialog::system_picker())
+        .with_update_plan(plan)
+        .with_state_file(state::default_state_file());
     let options = tui::Options {
         mouse: mouse_enabled(std::env::var_os("SSHTUI_NO_MOUSE").as_deref()),
         color: color_mode(std::env::var_os("COLORTERM").as_deref()),

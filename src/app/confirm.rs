@@ -27,6 +27,15 @@ pub enum ConfirmKind {
     Forget,
 }
 
+/// The highlighted answer on a destructive confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmChoice {
+    /// Return to the list.
+    Cancel,
+    /// Apply the destructive change.
+    Proceed,
+}
+
 /// A planned change awaiting confirmation.
 #[derive(Debug)]
 pub struct ConfirmState {
@@ -34,15 +43,18 @@ pub struct ConfirmState {
     pub(super) action: ConfirmAction,
     pub(super) alias: String,
     scroll: usize,
+    choice: Option<ConfirmChoice>,
 }
 
 impl ConfirmState {
     pub(super) fn new(pending: PendingWrite, alias: String, action: ConfirmAction) -> Self {
+        let choice = (!matches!(action, ConfirmAction::Edit(_))).then_some(ConfirmChoice::Cancel);
         Self {
             pending,
             action,
             alias,
             scroll: 0,
+            choice,
         }
     }
 
@@ -71,6 +83,32 @@ impl ConfirmState {
             ConfirmAction::Edit(_) => ConfirmKind::Save,
             ConfirmAction::Delete => ConfirmKind::Delete,
             ConfirmAction::Forget { .. } => ConfirmKind::Forget,
+        }
+    }
+
+    /// Returns the highlighted answer, or None when the confirmation has no choice row.
+    pub fn choice(&self) -> Option<ConfirmChoice> {
+        self.choice
+    }
+
+    pub(super) fn toggle_choice(&mut self) {
+        self.choice = self.choice.map(|choice| match choice {
+            ConfirmChoice::Cancel => ConfirmChoice::Proceed,
+            ConfirmChoice::Proceed => ConfirmChoice::Cancel,
+        });
+    }
+
+    /// Returns the destructive confirmation question with the display path.
+    pub(crate) fn question(&self, path: &str) -> Option<String> {
+        match &self.action {
+            ConfirmAction::Edit(_) => None,
+            ConfirmAction::Delete => Some(format!("Delete {} from {path}?", self.alias)),
+            ConfirmAction::Forget { name, removed } => {
+                let entries = if *removed == 1 { "entry" } else { "entries" };
+                Some(format!(
+                    "Remove {removed} known_hosts {entries} for {name}?"
+                ))
+            }
         }
     }
 

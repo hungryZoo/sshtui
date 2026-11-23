@@ -219,8 +219,11 @@ fn list_shows_hosts_selection_effective_values_and_source() {
             "Source     ~/.ssh/config:14",
             "enter runs",
             "$ ssh prod-web-1",
-            " enter  connect   n new   e edit   d delete   x forget   / filter   r reload   esc quit",
         ],
+    );
+    assert_eq!(
+        screen(&view)[26],
+        "   enter  connect   e edit   d delete   x forget(known_host)   / filter   r reload   esc quit"
     );
     assert_eq!(view.buffer()[(57, 5)].modifier, Modifier::BOLD);
     assert_eq!(view.buffer()[(57, 6)].fg, MUTED);
@@ -346,8 +349,78 @@ fn list_shows_filter_count_and_empty_results() {
     press(&mut app, KeyCode::Enter);
     let view = draw(&app, 100, 28);
     contains(&view, &["/ PRODxxxxx", "No matching hosts"]);
-    assert_eq!(view.buffer()[(2, 26)].bg, ROW);
-    assert_eq!(view.buffer()[(3, 26)].fg, MUTED);
+    assert_eq!(view.buffer()[(2, 26)].bg, ACCENT);
+    assert_eq!(view.buffer()[(3, 26)].fg, BG);
+}
+
+#[test]
+fn new_row_follows_the_hosts_and_shows_its_own_detail_and_help() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[7].starts_with("    queue"));
+    assert!(rows[8].starts_with("    + New connection n"));
+    assert_eq!(view.buffer()[(21, 8)].fg, MUTED);
+    assert_text_hit(&view, &hits, "+ New connection", Some(ClickTarget::NewRow));
+    assert_eq!(hits.hit(53, 8), Some(&ClickTarget::NewRow));
+    assert_eq!(ClickTarget::NewRow.hover_key(), Some(HoverKey::NewRow));
+
+    press(&mut app, KeyCode::End);
+    press(&mut app, KeyCode::Down);
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[8].starts_with("  › + New connection"));
+    assert_eq!(view.buffer()[(2, 8)].bg, ROW);
+    assert_eq!(view.buffer()[(53, 8)].bg, ROW);
+    assert_eq!(view.buffer()[(57, 5)].modifier, Modifier::BOLD);
+    assert_eq!(view.buffer()[(57, 6)].fg, MUTED);
+    assert_eq!(view.buffer()[(57, 7)].fg, MUTED);
+    assert!(rows[5].ends_with("│  New connection"));
+    let description: Vec<_> = rows[6..8]
+        .iter()
+        .map(|row| row.split_once("│  ").unwrap().1)
+        .collect();
+    assert_eq!(
+        description.join(" "),
+        "Add a host or connect once without saving."
+    );
+    assert!(!rows.join("\n").contains("enter runs"));
+    assert!(rows[26].starts_with("   enter  new   "));
+    assert_eq!(view.buffer()[(2, 26)].bg, ACCENT);
+    assert_text_hit(
+        &view,
+        &hits,
+        " enter  new",
+        Some(ClickTarget::Key(KeyCode::Enter)),
+    );
+}
+
+#[test]
+fn new_row_scrolls_with_hosts_and_is_selected_when_no_hosts_match() {
+    let mut app = App::new(FakeBackend::new(MANY_HOSTS));
+    press(&mut app, KeyCode::End);
+    press(&mut app, KeyCode::Down);
+    let (view, hits) = draw_with_hits(&app, 80, 10);
+    let rows = screen(&view);
+    assert!(rows[6].starts_with("    git"));
+    assert!(rows[7].starts_with("  › + New connection"));
+    assert_eq!(hits.hit(2, 7), Some(&ClickTarget::NewRow));
+
+    press(&mut app, KeyCode::Char('/'));
+    app.handle_paste("missing");
+    press(&mut app, KeyCode::Enter);
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[1].ends_with("0 of 8 hosts"));
+    assert!(rows[5].starts_with("  No matching hosts"));
+    assert!(rows[6].starts_with("  › + New connection"));
+    assert_eq!(hits.hit(2, 5), None);
+    assert_eq!(hits.hit(2, 6), Some(&ClickTarget::NewRow));
+    assert_eq!(
+        rows[26],
+        "   enter  new   e edit   d delete   x forget(known_host)   / filter   esc clear filter"
+    );
+    assert_eq!(view.buffer()[(2, 26)].bg, ACCENT);
 }
 
 #[test]
@@ -1161,7 +1234,7 @@ fn help_styles_keys_and_descriptions_independently() {
         assert_eq!(buffer[(x, 26)].symbol(), " ");
         assert_eq!(buffer[(x, 26)].bg, BG);
     }
-    assert_eq!(buffer[(20, 26)].symbol(), "n");
+    assert_eq!(buffer[(20, 26)].symbol(), "e");
     assert_eq!(buffer[(20, 26)].fg, TEXT);
     assert_eq!(buffer[(20, 26)].modifier, Modifier::BOLD);
     assert_eq!(buffer[(22, 26)].fg, MUTED);
@@ -1275,10 +1348,80 @@ fn confirmation_puts_key_hints_below_the_diff_for_edit_and_delete() {
         &[
             "Delete prod-web-1",
             "3 lines will change  -3",
-            "y  delete   n back to list   ↑↓ scroll",
+            "enter  cancel   ←→ choose   y delete   n back to list   ↑↓ scroll",
         ],
     );
     assert!(!screen(&view)[3].contains('+'));
+}
+
+#[test]
+fn delete_question_highlights_the_current_choice_and_both_choices_are_clickable() {
+    for (mode, accent, error, muted) in [
+        (ColorMode::TrueColor, ACCENT, ERROR, MUTED),
+        (ColorMode::Ansi, Color::Cyan, Color::Red, Color::DarkGray),
+    ] {
+        let mut app = mockup_list();
+        press(&mut app, KeyCode::Char('d'));
+        for (highlighted, enter) in [("Cancel", "cancel"), ("Delete", "delete")] {
+            let (view, hits) = draw_with_style(&app, 100, 28, mode, None);
+            let rows = screen(&view);
+            let question = &rows[24];
+            assert!(question.starts_with("  Delete prod-web-1 from ~/.ssh/config?"));
+            assert!(rows[23].ends_with("The current file is kept as ~/.ssh/.config.sshtui.bak"));
+            assert_eq!(
+                rows[26],
+                format!("   enter  {enter}   ←→ choose   y delete   n back to list   ↑↓ scroll")
+            );
+            assert_text_hit(&view, &hits, "←→ choose", None);
+            assert_text_hit(
+                &view,
+                &hits,
+                &format!(" enter  {enter}"),
+                Some(ClickTarget::Key(KeyCode::Enter)),
+            );
+            for (label, code, color) in [("Cancel", 'n', accent), ("Delete", 'y', error)] {
+                let column = question.rfind(label).unwrap() as u16;
+                let width = label.width() as u16;
+                let cell = &view.buffer()[(column, 24)];
+                let columns = if label == highlighted {
+                    assert_eq!(cell.modifier, Modifier::BOLD);
+                    for x in column - 1..=column + width {
+                        assert_eq!(view.buffer()[(x, 24)].bg, color);
+                    }
+                    column - 1..column + width + 1
+                } else {
+                    assert_eq!(cell.fg, muted);
+                    assert!(!cell.modifier.contains(Modifier::BOLD));
+                    column..column + width
+                };
+                for x in columns {
+                    assert_eq!(
+                        hits.hit(x, 24),
+                        Some(&ClickTarget::Key(KeyCode::Char(code)))
+                    );
+                }
+            }
+            press(&mut app, KeyCode::Right);
+        }
+    }
+}
+
+#[test]
+fn delete_question_keeps_the_choices_when_the_window_is_short_and_narrow() {
+    let mut app = mockup_list();
+    press(&mut app, KeyCode::Char('d'));
+    let (view, hits) = draw_with_hits(&app, 40, 7);
+    let rows = screen(&view);
+    assert!(rows[4].starts_with("Delete prod-web-1"));
+    assert!(rows[4].ends_with("Cancel    Delete"));
+    assert!(!rows.join("\n").contains("The current file is kept as"));
+    assert_text_hit(
+        &view,
+        &hits,
+        "Cancel",
+        Some(ClickTarget::Key(KeyCode::Char('n'))),
+    );
+    assert_eq!(hits.hit(39, 4), Some(&ClickTarget::Key(KeyCode::Char('y'))));
 }
 
 #[test]
@@ -1309,8 +1452,40 @@ fn forget_confirmation_shows_the_lookup_name_removals_backup_and_hints() {
             assert!(line.contains("[www.example.com]:2222 ssh-ed25519 fake-key-"));
             assert!(!line.contains("-tail"));
         }
-        assert!(rows[24].ends_with("The current file is kept as ~/.ssh/.known_hosts.sshtui.bak"));
-        assert!(rows[26].ends_with(" y  forget   n back to list   ↑↓ scroll"));
+        assert!(rows[23].ends_with("The current file is kept as ~/.ssh/.known_hosts.sshtui.bak"));
+        assert!(
+            rows[26]
+                .ends_with(" enter  cancel   ←→ choose   y forget   n back to list   ↑↓ scroll")
+        );
+    }
+}
+
+#[test]
+fn forget_question_counts_entries_and_offers_forget() {
+    for (count, entries) in [(1, "entry"), (2, "entries")] {
+        let backend = FakeBackend::new(HOSTS);
+        let entry = "[www.example.com]:2222 ssh-ed25519 fake-key\n";
+        fs::write(known_hosts::file_path(backend.paths()), entry.repeat(count)).unwrap();
+        let mut app = App::new(backend);
+        press(&mut app, KeyCode::Char('x'));
+        let (view, hits) = draw_with_hits(&app, 100, 28);
+        let rows = screen(&view);
+        assert_eq!(
+            rows[24],
+            format!(
+                "  Remove {count} known_hosts {entries} for [www.example.com]:2222?    Cancel    Forget"
+            )
+        );
+        let forget = rows[24].rfind("Forget").unwrap() as u16;
+        assert_eq!(
+            hits.hit(forget, 24),
+            Some(&ClickTarget::Key(KeyCode::Char('y')))
+        );
+        press(&mut app, KeyCode::Right);
+        assert!(
+            screen(&draw(&app, 100, 28))[26]
+                .ends_with(" enter  forget   ←→ choose   y forget   n back to list   ↑↓ scroll")
+        );
     }
 }
 
@@ -1599,9 +1774,9 @@ fn list_key_hints_register_whole_pairs_and_leave_gaps_unmapped() {
     let (view, hits) = draw_with_hits(&app, 100, 28);
     for (text, code) in [
         (" enter  connect", KeyCode::Enter),
-        ("n new", KeyCode::Char('n')),
         ("e edit", KeyCode::Char('e')),
         ("d delete", KeyCode::Char('d')),
+        ("x forget(known_host)", KeyCode::Char('x')),
         ("/ filter", KeyCode::Char('/')),
         ("r reload", KeyCode::Char('r')),
         ("esc quit", KeyCode::Esc),
@@ -1637,6 +1812,11 @@ fn escape_is_the_last_list_hint_and_reflects_an_applied_filter() {
 #[test]
 fn filtered_list_hints_keep_escape_and_drop_reload_when_space_runs_out() {
     let mut app = App::new(FakeBackend::new(HOSTS));
+    let unfiltered = draw(&app, 96, 28);
+    assert_eq!(
+        screen(&unfiltered)[26],
+        "   enter  connect   e edit   d delete   x forget(known_host)   / filter   r reload   esc quit"
+    );
     press(&mut app, KeyCode::Char('/'));
     app.handle_paste("web");
     press(&mut app, KeyCode::Enter);
@@ -1644,18 +1824,18 @@ fn filtered_list_hints_keep_escape_and_drop_reload_when_space_runs_out() {
     let wide = draw(&app, 100, 28);
     assert_eq!(
         screen(&wide)[26],
-        "   enter  connect   n new   e edit   d delete   x forget   / filter   r reload   esc clear filter"
+        "   enter  connect   e edit   d delete   x forget(known_host)   / filter   esc clear filter"
     );
 
     let (view, hits) = draw_with_hits(&app, 96, 28);
     assert_eq!(
         screen(&view)[26],
-        "   enter  connect   n new   e edit   d delete   x forget   / filter   esc clear filter"
+        "   enter  connect   e edit   d delete   x forget(known_host)   / filter   esc clear filter"
     );
     assert_text_hit(
         &view,
         &hits,
-        "x forget",
+        "x forget(known_host)",
         Some(ClickTarget::Key(KeyCode::Char('x'))),
     );
     assert_text_hit(
@@ -1679,7 +1859,7 @@ fn filtered_list_hints_keep_escape_and_drop_reload_when_space_runs_out() {
 fn narrow_list_hints_keep_the_badge_and_escape_together() {
     let app = App::new(FakeBackend::new(HOSTS));
     let (view, hits) = draw_with_hits(&app, 40, 12);
-    assert_eq!(screen(&view)[11], " enter  connect   n new   esc quit");
+    assert_eq!(screen(&view)[11], " enter  connect   e edit   esc quit");
     assert_text_hit(
         &view,
         &hits,
@@ -1818,7 +1998,7 @@ fn confirm_action_hints_use_their_letter_keys() {
     press(&mut deleted, KeyCode::Char('d'));
     for (app, primary, back) in [
         (edited, " y  save", "n back to form"),
-        (deleted, " y  delete", "n back to list"),
+        (deleted, "y delete", "n back to list"),
     ] {
         let (view, hits) = draw_with_hits(&app, 100, 28);
         for (text, code) in [(primary, 'y'), (back, 'n')] {
@@ -2053,13 +2233,29 @@ fn hovering_a_read_only_field_brightens_its_label_only() {
 #[test]
 fn hovering_an_ordinary_hint_brightens_its_whole_pair_and_description() {
     let app = mockup_list();
-    let view = fully_hovered(&app, HoverKey::Key(KeyCode::Char('n')));
-    for x in 20..25 {
+    let view = fully_hovered(&app, HoverKey::Key(KeyCode::Char('e')));
+    for x in 20..26 {
         assert_eq!(view.buffer()[(x, 26)].bg, ROW);
     }
     assert_eq!(view.buffer()[(19, 26)].bg, BG);
-    assert_eq!(view.buffer()[(25, 26)].bg, BG);
+    assert_eq!(view.buffer()[(26, 26)].bg, BG);
     assert_eq!(view.buffer()[(22, 26)].fg, TEXT);
+}
+
+#[test]
+fn hovering_the_new_row_uses_host_row_backgrounds() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    for (selected, background) in [(false, HOVER_ROW), (true, HOVER_SELECTED)] {
+        if selected {
+            press(&mut app, KeyCode::End);
+            press(&mut app, KeyCode::Down);
+        }
+        let view = fully_hovered(&app, HoverKey::NewRow);
+        for x in 2..54 {
+            assert_eq!(view.buffer()[(x, 8)].bg, background);
+        }
+        assert_eq!(view.buffer()[(54, 8)].bg, BG);
+    }
 }
 
 #[test]

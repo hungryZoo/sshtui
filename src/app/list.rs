@@ -59,7 +59,7 @@ impl ListState {
         let length = self.filter.value().len();
         self.filter.handle_key(key);
         if self.filter.value().len() != length {
-            self.refilter(config, None, 0);
+            self.refilter(config, None, Some(0));
         }
     }
 
@@ -67,14 +67,14 @@ impl ListState {
         let length = self.filter.value().len();
         self.filter.paste(text);
         if self.filter.value().len() != length {
-            self.refilter(config, None, 0);
+            self.refilter(config, None, Some(0));
         }
     }
 
     pub(super) fn clear_filter(&mut self, config: &ConfigSet) {
         if !self.filter.value().is_empty() {
             self.filter.set(String::new());
-            self.refilter(config, None, 0);
+            self.refilter(config, None, Some(0));
         }
     }
 
@@ -84,12 +84,20 @@ impl ListState {
             .map(|&index| &config.hosts[index])
     }
 
-    pub(super) fn last_index(&self) -> usize {
+    pub(super) fn last_host_index(&self) -> usize {
         self.visible.len().saturating_sub(1)
     }
 
+    pub(super) fn new_row_index(&self) -> usize {
+        self.visible.len()
+    }
+
+    pub(super) fn new_row_selected(&self) -> bool {
+        self.selection == self.new_row_index()
+    }
+
     pub(super) fn select(&mut self, index: usize) {
-        self.selection = index.min(self.last_index());
+        self.selection = index.min(self.new_row_index());
     }
 
     pub(super) fn selected_effective(
@@ -134,10 +142,12 @@ impl ListState {
                 .entry(entry.source.clone())
                 .or_insert_with(|| backend.is_writable(&entry.source));
         }
-        self.refilter(config, preferred, self.selection);
+        let fallback =
+            (!self.new_row_selected() || self.visible.is_empty()).then_some(self.selection);
+        self.refilter(config, preferred, fallback);
     }
 
-    fn refilter(&mut self, config: &ConfigSet, preferred: Option<&str>, fallback: usize) {
+    fn refilter(&mut self, config: &ConfigSet, preferred: Option<&str>, fallback: Option<usize>) {
         let filter = self.filter.value().to_lowercase();
         self.visible = config
             .hosts
@@ -152,7 +162,9 @@ impl ListState {
                 .iter()
                 .position(|&index| config.hosts[index].name == name)
         });
-        self.select(preferred.unwrap_or(fallback));
+        self.selection = preferred
+            .or_else(|| fallback.map(|index| index.min(self.last_host_index())))
+            .unwrap_or_else(|| self.new_row_index());
     }
 }
 

@@ -12,6 +12,8 @@ use crate::app::{ClickTarget, FormField};
 pub enum HoverKey {
     /// Row index in the filtered host list.
     HostRow(usize),
+    /// The row that opens a new connection form.
+    NewRow,
     /// The entire field, including its label and input cells.
     FormField(FormField),
     /// Row index in the key picker.
@@ -27,6 +29,7 @@ impl ClickTarget {
     pub fn hover_key(&self) -> Option<HoverKey> {
         Some(match *self {
             Self::HostRow(index) => HoverKey::HostRow(index),
+            Self::NewRow => HoverKey::NewRow,
             Self::FormField { field, .. } => HoverKey::FormField(field),
             Self::KeyRow(index) => HoverKey::KeyRow(index),
             Self::Key(code) => HoverKey::Key(code),

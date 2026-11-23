@@ -32,6 +32,9 @@ struct FakeBackend {
     _temp: TempDir,
     loaded: RefCell<Result<ConfigSet, String>>,
     load_calls: Cell<usize>,
+    last_host: Option<String>,
+    last_host_reads: Cell<usize>,
+    connections: RefCell<Vec<String>>,
     prefix: RefCell<Vec<OsString>>,
     live_prefix: bool,
     effective_values: RefCell<HashMap<String, Result<EffectiveConfig, String>>>,
@@ -67,6 +70,9 @@ impl FakeBackend {
             _temp: temp,
             loaded: RefCell::new(Ok(config)),
             load_calls: Cell::new(0),
+            last_host: None,
+            last_host_reads: Cell::new(0),
+            connections: RefCell::default(),
             prefix: RefCell::default(),
             live_prefix: false,
             effective_values: RefCell::default(),
@@ -139,6 +145,16 @@ impl Backend for FakeBackend {
     fn load_config(&self) -> Result<ConfigSet, String> {
         self.load_calls.set(self.load_calls.get() + 1);
         self.loaded.borrow().clone()
+    }
+
+    fn last_host(&self) -> Option<String> {
+        assert!(self.load_calls.get() > 0);
+        self.last_host_reads.set(self.last_host_reads.get() + 1);
+        self.last_host.clone()
+    }
+
+    fn record_connection(&self, alias: &str) {
+        self.connections.borrow_mut().push(alias.into());
     }
 
     fn effective(&self, alias: &str) -> Result<EffectiveConfig, String> {
@@ -296,15 +312,145 @@ fn list_navigation_stops_at_boundaries_and_accepts_alias_keys() {
     assert_eq!(app.selection(), Some(1));
     key(&mut app, KeyCode::End);
     key(&mut app, KeyCode::Down);
-    assert_eq!(app.selection(), Some(2));
+    assert_eq!(app.selection(), None);
     ch(&mut app, 'k');
-    assert_eq!(app.selection(), Some(1));
+    assert_eq!(app.selection(), Some(2));
     ch(&mut app, 'g');
     assert_eq!(app.selection(), Some(0));
     ch(&mut app, 'G');
     assert_eq!(app.selection(), Some(2));
     key(&mut app, KeyCode::Home);
     assert_eq!(app.selection(), Some(0));
+}
+
+#[test]
+fn last_host_selects_a_saved_alias_only_at_startup() {
+    for (last_host, index, alias) in [
+        (Some("queue"), 2, "queue"),
+        (Some("missing"), 0, "web"),
+        (None, 0, "web"),
+    ] {
+        let mut backend = FakeBackend::new(HOSTS);
+        backend.last_host = last_host.map(str::to_owned);
+        let mut app = App::new(backend);
+        assert_eq!(app.selection(), Some(index));
+        assert_eq!(*app.backend().effective_calls.borrow(), [alias]);
+        assert_eq!(app.backend().last_host_reads.get(), 1);
+
+        key(&mut app, KeyCode::Home);
+        ch(&mut app, 'r');
+        assert_eq!(app.selection(), Some(0));
+        assert_eq!(app.backend().last_host_reads.get(), 1);
+    }
+}
+
+#[test]
+fn a_successful_saved_alias_connection_is_recorded_once() {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.last_host = Some("queue".into());
+    let mut app = App::new(backend);
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["queue".into()])));
+    assert_eq!(*app.backend().connections.borrow(), ["queue"]);
+
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    app.handle_click(ClickTarget::HostRow(1), false);
+    assert!(app.backend().connections.borrow().is_empty());
+    app.handle_click(ClickTarget::HostRow(1), true);
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["db".into()])));
+    assert_eq!(*app.backend().connections.borrow(), ["db"]);
+
+    let backend = FakeBackend::new("");
+    backend.commit_with(CommitBehavior::WriteFile);
+    backend.set_effective("web", basic_expected());
+    let mut app = App::new(backend);
+    fill_named_host(&mut app, "web");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["web".into()])));
+    assert_eq!(*app.backend().connections.borrow(), ["web"]);
+}
+
+#[test]
+fn direct_connections_and_invalid_saved_aliases_are_not_recorded() {
+    let mut app = App::new(FakeBackend::new(""));
+    set_field(&mut app, FormField::Address, "example.com");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["example.com".into()])));
+    assert!(app.backend().connections.borrow().is_empty());
+
+    let mut app = App::new(FakeBackend::new("Host -invalid\n"));
+    assert_eq!(names(&app), ["-invalid"]);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.exit(), None);
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        ArgsError::InvalidAlias.to_string()
+    );
+    assert!(app.backend().connections.borrow().is_empty());
+}
+
+#[test]
+fn new_row_is_selectable_and_opens_the_new_form() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    key(&mut app, KeyCode::End);
+    assert_eq!(app.selection(), Some(2));
+    key(&mut app, KeyCode::Down);
+    assert!(app.new_row_selected());
+    assert_eq!(app.selection(), None);
+    assert_eq!(app.selected_command(), None);
+    assert_eq!(app.selected_effective(), None);
+    for action in ['e', 'd', 'x'] {
+        ch(&mut app, action);
+        assert!(matches!(app.mode(), Mode::List));
+        assert!(app.new_row_selected());
+        assert_eq!(app.status(), None);
+    }
+    assert!(app.backend().writes.borrow().is_empty());
+    assert!(app.backend().forget_calls.borrow().is_empty());
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.selection(), Some(2));
+    assert!(!app.new_row_selected());
+    ch(&mut app, 'j');
+    assert!(app.new_row_selected());
+    key(&mut app, KeyCode::End);
+    assert_eq!(app.selection(), Some(2));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.form().unwrap().kind(), FormKind::New));
+    assert_eq!(app.exit(), None);
+}
+
+#[test]
+fn empty_filter_results_select_the_new_row_and_it_opens_on_enter() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    ch(&mut app, '/');
+    app.handle_paste("missing");
+    assert!(app.new_row_selected());
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.new_row_selected());
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.form().unwrap().kind(), FormKind::New));
+}
+
+#[test]
+fn clicking_the_new_row_selects_it_and_opens_the_form_even_during_filter_input() {
+    for filtering in [false, true] {
+        let mut app = App::new(FakeBackend::new(HOSTS));
+        if filtering {
+            ch(&mut app, '/');
+            app.handle_paste("e");
+        }
+        app.handle_click(ClickTarget::NewRow, false);
+        assert!(matches!(app.form().unwrap().kind(), FormKind::New));
+        assert!(app.new_row_selected());
+        assert_eq!(app.exit(), None);
+        key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode(), Mode::List));
+        assert!(!app.is_filtering());
+        assert!(app.new_row_selected());
+    }
 }
 
 #[test]
@@ -444,7 +590,6 @@ fn filter_arrows_move_and_no_matching_host_cannot_connect() {
     assert_eq!(app.selection(), Some(0));
     ch(&mut app, 'k');
     assert_eq!(app.filter().value(), "wk");
-    key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.exit(), None);
     assert!(matches!(app.mode(), Mode::List));
@@ -1261,6 +1406,9 @@ fn confirming_forget_commits_the_plan_without_reloading_config() {
         ch(&mut app, 'x');
         assert!(matches!(app.mode(), Mode::Confirm(_)));
         assert!(app.backend().writes.borrow().is_empty());
+        if accept == KeyCode::Enter {
+            key(&mut app, KeyCode::Right);
+        }
         key(&mut app, accept);
 
         assert_eq!(*app.backend().writes.borrow(), [pending]);
@@ -1276,6 +1424,78 @@ fn confirming_forget_commits_the_plan_without_reloading_config() {
             )
         );
     }
+}
+
+#[test]
+fn destructive_confirmations_default_to_cancel_and_accept_explicit_proceed() {
+    for (action, backend, kind) in [
+        ('d', FakeBackend::new(HOSTS), ConfirmKind::Delete),
+        ('x', forget_backend(1).0, ConfirmKind::Forget),
+    ] {
+        let mut app = App::new(backend);
+        key(&mut app, KeyCode::End);
+        ch(&mut app, action);
+        assert_eq!(confirm(&app).kind(), kind);
+        assert_eq!(confirm(&app).choice(), Some(ConfirmChoice::Cancel));
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode(), Mode::List));
+        assert!(app.backend().writes.borrow().is_empty());
+
+        for back in [KeyCode::Char('n'), KeyCode::Esc] {
+            ch(&mut app, action);
+            for (code, modifiers, choice) in [
+                (KeyCode::Tab, KeyModifiers::NONE, ConfirmChoice::Proceed),
+                (KeyCode::Tab, KeyModifiers::SHIFT, ConfirmChoice::Cancel),
+                (
+                    KeyCode::BackTab,
+                    KeyModifiers::SHIFT,
+                    ConfirmChoice::Proceed,
+                ),
+                (KeyCode::Left, KeyModifiers::NONE, ConfirmChoice::Cancel),
+                (
+                    KeyCode::Char('h'),
+                    KeyModifiers::NONE,
+                    ConfirmChoice::Proceed,
+                ),
+                (
+                    KeyCode::Char('l'),
+                    KeyModifiers::NONE,
+                    ConfirmChoice::Cancel,
+                ),
+                (KeyCode::Right, KeyModifiers::NONE, ConfirmChoice::Proceed),
+            ] {
+                app.handle_key(KeyEvent::new(code, modifiers));
+                assert_eq!(confirm(&app).choice(), Some(choice));
+            }
+            key(&mut app, back);
+            assert!(matches!(app.mode(), Mode::List));
+            assert!(app.backend().writes.borrow().is_empty());
+        }
+        ch(&mut app, action);
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(app.backend().writes.borrow().len(), 1);
+
+        ch(&mut app, action);
+        assert_eq!(confirm(&app).choice(), Some(ConfirmChoice::Cancel));
+        ch(&mut app, 'y');
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(app.backend().writes.borrow().len(), 2);
+    }
+}
+
+#[test]
+fn save_confirmation_has_no_choice_and_enter_saves() {
+    let mut app = App::new(FakeBackend::new(EDITABLE));
+    ch(&mut app, 'e');
+    set_field(&mut app, FormField::User, "bob");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(confirm(&app).kind(), ConfirmKind::Save);
+    assert_eq!(confirm(&app).choice(), None);
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.backend().writes.borrow().len(), 1);
 }
 
 #[test]
@@ -1636,15 +1856,17 @@ fn double_clicking_a_filtered_row_connects_and_keeps_filter_input_active() {
 fn list_wheel_moves_one_row_and_stops_at_both_ends() {
     let mut app = App::new(FakeBackend::new(HOSTS));
     for (down, index) in [
-        (true, 1),
-        (true, 2),
-        (true, 2),
-        (false, 1),
-        (false, 0),
-        (false, 0),
+        (true, Some(1)),
+        (true, Some(2)),
+        (true, None),
+        (true, None),
+        (false, Some(2)),
+        (false, Some(1)),
+        (false, Some(0)),
+        (false, Some(0)),
     ] {
         app.handle_scroll(down);
-        assert_eq!(app.selection(), Some(index));
+        assert_eq!(app.selection(), index);
     }
     assert_eq!(app.backend().effective_count("db"), 1);
     assert_eq!(app.backend().effective_count("queue"), 1);

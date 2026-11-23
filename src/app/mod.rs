@@ -23,7 +23,7 @@ use crate::update::UpdatePlan;
 use crate::validate::ValidationError;
 
 pub use self::backend::Backend;
-pub use self::confirm::{ConfirmKind, ConfirmState, KeyPickerState, NoticeState};
+pub use self::confirm::{ConfirmChoice, ConfirmKind, ConfirmState, KeyPickerState, NoticeState};
 pub use self::form::{FormField, FormKind, FormState};
 pub use self::input::TextInput;
 pub use self::list::HostRow;
@@ -49,6 +49,8 @@ pub enum Exit {
 pub enum ClickTarget {
     /// Row index in the filtered host list.
     HostRow(usize),
+    /// The row that opens a new connection form.
+    NewRow,
     /// A field and the display column in its full value.
     FormField {
         /// The field to focus.
@@ -109,7 +111,8 @@ pub struct App<B: Backend> {
 }
 
 impl<B: Backend> App<B> {
-    /// Loads the configuration. With no hosts the app starts on the new-connection form.
+    /// Loads the configuration and selects the last connected host when available.
+    /// With no hosts the app starts on the new-connection form.
     pub fn new(backend: B) -> Self {
         let mut app = Self {
             update_plan: backend.update_plan(),
@@ -121,7 +124,9 @@ impl<B: Backend> App<B> {
             exit: None,
             full_redraw: false,
         };
-        app.reload(None);
+        app.load_config();
+        let last_host = app.backend.last_host();
+        app.reload_list(last_host.as_deref());
         if app.config.hosts.is_empty() {
             app.mode = Mode::Form(FormState::new());
         }
@@ -168,6 +173,11 @@ impl<B: Backend> App<B> {
                     self.connect_selected();
                 }
                 return;
+            }
+            (Mode::List, ClickTarget::NewRow) => {
+                self.list.select(self.list.new_row_index());
+                self.list.filtering = false;
+                KeyCode::Char('n')
             }
             (Mode::List, ClickTarget::UpdateNotice) if self.update_plan.is_some() => {
                 KeyCode::Char('u')
@@ -252,11 +262,16 @@ impl<B: Backend> App<B> {
         self.list.rows(&self.config)
     }
 
-    /// Returns the selected index in the filtered rows, if there are any.
+    /// Returns the selected host index in the filtered rows.
     pub fn selection(&self) -> Option<usize> {
         self.list
             .selected(&self.config)
             .map(|_| self.list.selection)
+    }
+
+    /// Returns whether the new connection row is selected.
+    pub fn new_row_selected(&self) -> bool {
+        self.list.new_row_selected()
     }
 
     /// Returns the filter's value and cursor.
@@ -347,6 +362,11 @@ impl<B: Backend> App<B> {
     }
 
     fn reload(&mut self, preferred: Option<&str>) {
+        self.load_config();
+        self.reload_list(preferred);
+    }
+
+    fn load_config(&mut self) {
         self.config = match self.backend.load_config() {
             Ok(config) => {
                 if let Some(first) = config.warnings.first() {
@@ -366,6 +386,9 @@ impl<B: Backend> App<B> {
                 ConfigSet::default()
             }
         };
+    }
+
+    fn reload_list(&mut self, preferred: Option<&str>) {
         self.list.reload(&self.backend, &self.config, preferred);
         self.refresh_selected();
     }
@@ -395,7 +418,12 @@ impl<B: Backend> App<B> {
 
     fn connect(&mut self, target: ConnectTarget) {
         match self.connection_args(&target) {
-            Ok(args) => self.exit = Some(Exit::Connect(args)),
+            Ok(args) => {
+                if let ConnectTarget::Alias(alias) = &target {
+                    self.backend.record_connection(alias);
+                }
+                self.exit = Some(Exit::Connect(args));
+            }
             Err(error) => self.set_status(StatusLevel::Error, error.to_string()),
         }
     }
@@ -432,9 +460,9 @@ impl<B: Backend> App<B> {
             }
             KeyCode::Down | KeyCode::Char('j') => self.list.select(self.list.selection + 1),
             KeyCode::Home | KeyCode::Char('g') => self.list.select(0),
-            KeyCode::End | KeyCode::Char('G') => self.list.select(self.list.last_index()),
-            KeyCode::Enter => self.connect_selected(),
-            KeyCode::Char('n') => return Mode::Form(FormState::new()),
+            KeyCode::End | KeyCode::Char('G') => self.list.select(self.list.last_host_index()),
+            KeyCode::Enter if !self.new_row_selected() => self.connect_selected(),
+            KeyCode::Enter | KeyCode::Char('n') => return Mode::Form(FormState::new()),
             KeyCode::Char('e') => return self.edit_selected(),
             KeyCode::Char('d') => return self.delete_selected(),
             KeyCode::Char('x') => return self.forget_selected(),
@@ -696,13 +724,21 @@ impl<B: Backend> App<B> {
     fn handle_confirm_key(&mut self, mut confirm: ConfirmState, key: KeyEvent) -> Mode {
         if is_plain(key) {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => return self.commit_confirmed(confirm),
-                KeyCode::Char('n') | KeyCode::Esc => {
+                KeyCode::Char('y') => return self.commit_confirmed(confirm),
+                KeyCode::Enter if confirm.choice() != Some(ConfirmChoice::Cancel) => {
+                    return self.commit_confirmed(confirm);
+                }
+                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
                     return match confirm.action {
                         ConfirmAction::Edit(form) => Mode::Form(form),
                         ConfirmAction::Delete | ConfirmAction::Forget { .. } => Mode::List,
                     };
                 }
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h' | 'l') => confirm.toggle_choice(),
                 KeyCode::Up => confirm.up(false),
                 KeyCode::Down => confirm.down(false),
                 KeyCode::PageUp => confirm.up(true),
