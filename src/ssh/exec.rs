@@ -1,6 +1,7 @@
 //! Discovery and execution of the SSH executable.
 
 use std::ffi::{OsStr, OsString};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -85,6 +86,34 @@ pub fn run_interactive(ssh: &Path, args: &[OsString]) -> Result<i32, SshError> {
         })?;
         Ok(status.code().unwrap_or(1))
     }
+}
+
+/// Runs ssh as a child with `input` on stdin while stdout and stderr stay attached to the terminal.
+/// Returns the child's exit code, or 1 if it has no exit code.
+pub fn run_with_input(ssh: &Path, args: &[OsString], input: &[u8]) -> Result<i32, SshError> {
+    let io_error = |source| SshError::Io {
+        program: ssh.to_path_buf(),
+        source,
+    };
+    let mut child = Command::new(ssh)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(io_error)?;
+
+    let written = child
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut stdin| stdin.write_all(input));
+    let status = child.wait().map_err(io_error)?;
+    if let Err(source) = written
+        && source.kind() != io::ErrorKind::BrokenPipe
+    {
+        return Err(io_error(source));
+    }
+    Ok(status.code().unwrap_or(1))
 }
 
 #[cfg(test)]
@@ -184,5 +213,61 @@ mod tests {
             }
             other => panic!("expected an I/O error, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passes_arguments_and_stdin_and_returns_the_child_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("fake-ssh");
+        write_executable(
+            &program,
+            "#!/bin/sh\ncat > \"$1\" || exit 1\nprintf '%s\\n' \"$3\" \"$4\" > \"$2\" || exit 1\nexit 7\n",
+        );
+        let recorded_input = dir.path().join("recorded-input");
+        let recorded_args = dir.path().join("recorded-args");
+        let args = [
+            recorded_input.clone().into_os_string(),
+            recorded_args.clone().into_os_string(),
+            "one argument".into(),
+            "another".into(),
+        ];
+        let input = b"first line\nsecond line\0";
+        assert_eq!(run_with_input(&program, &args, input).unwrap(), 7);
+        assert_eq!(std::fs::read(recorded_input).unwrap(), input);
+        assert_eq!(
+            std::fs::read_to_string(recorded_args).unwrap(),
+            "one argument\nanother\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn returns_the_exit_code_when_the_child_closes_stdin_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("fake-ssh");
+        write_executable(&program, "#!/bin/sh\nexec 0<&-\nexit 7\n");
+        let input = vec![b'x'; 1024 * 1024];
+        assert_eq!(run_with_input(&program, &[], &input).unwrap(), 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn returns_one_when_the_child_exits_without_a_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("fake-ssh");
+        write_executable(&program, "#!/bin/sh\nkill -TERM \"$$\"\n");
+        assert_eq!(run_with_input(&program, &[], b"").unwrap(), 1);
+    }
+
+    #[test]
+    fn reports_io_error_for_a_missing_program_when_passing_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-ssh");
+        assert!(matches!(
+            run_with_input(&missing, &[], b"input"),
+            Err(SshError::Io { program, source })
+                if program == missing && source.kind() == io::ErrorKind::NotFound
+        ));
     }
 }

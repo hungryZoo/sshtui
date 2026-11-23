@@ -18,6 +18,8 @@ pub enum ConnectTarget {
         address: String,
         port: String,
         key_file: String,
+        /// Adds `-o PasswordAuthentication=no` to disable password authentication.
+        disable_password: bool,
     },
 }
 
@@ -64,12 +66,16 @@ pub fn connect_args(
             address,
             port,
             key_file,
+            disable_password,
         } => {
             validate_address(address)?;
             validate_user(user)?;
             let port = parse_port(port)?;
             validate_key_file(key_file)?;
 
+            if *disable_password {
+                args.extend(["-o".into(), "PasswordAuthentication=no".into()]);
+            }
             if let Some(port) = port {
                 args.extend(["-p".into(), port.to_string().into()]);
             }
@@ -124,6 +130,7 @@ mod tests {
             address: address.into(),
             port: port.into(),
             key_file: key_file.into(),
+            disable_password: false,
         }
     }
 
@@ -174,6 +181,34 @@ mod tests {
                 "-i".into(),
                 key_path,
                 "alice@example.com".into()
+            ]
+        );
+    }
+
+    #[test]
+    fn inserts_disabled_password_authentication_after_the_config_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SshPaths::resolve(Some(dir.path().as_os_str()), None, dir.path()).unwrap();
+        let prefix = config_file_args(&paths, true);
+        let target = ConnectTarget::Direct {
+            user: "alice".into(),
+            address: "example.com".into(),
+            port: "2222".into(),
+            key_file: "my key".into(),
+            disable_password: true,
+        };
+        let args = connect_args(&paths, &prefix, &target).unwrap();
+        assert_eq!(&args[..prefix.len()], prefix);
+        assert_eq!(
+            &args[prefix.len()..],
+            [
+                "-o",
+                "PasswordAuthentication=no",
+                "-p",
+                "2222",
+                "-i",
+                "my key",
+                "alice@example.com",
             ]
         );
     }

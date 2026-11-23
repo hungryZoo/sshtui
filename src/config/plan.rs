@@ -184,6 +184,7 @@ mod tests {
             user: None,
             port: None,
             identity_file: None,
+            password_authentication: None,
         }
     }
 

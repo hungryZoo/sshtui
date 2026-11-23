@@ -7,18 +7,25 @@ use crate::validate::{ValidationError, validate_nickname};
 use super::model::{Arg, Block, BlockKind, Directive, Eol, Line, LineKind, ParsedConfig};
 use super::reader::is_listable_pattern;
 
-/// The four options the form can edit.
+/// Options supported by the host config editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OptionKey {
     HostName,
     User,
     Port,
     IdentityFile,
+    PasswordAuthentication,
 }
 
 impl OptionKey {
     /// Editable options in the order used when writing new lines.
-    pub const ALL: [Self; 4] = [Self::HostName, Self::User, Self::Port, Self::IdentityFile];
+    pub const ALL: [Self; 5] = [
+        Self::HostName,
+        Self::User,
+        Self::Port,
+        Self::IdentityFile,
+        Self::PasswordAuthentication,
+    ];
 
     /// Returns the canonical keyword written for a new line.
     pub fn keyword(self) -> &'static str {
@@ -27,6 +34,7 @@ impl OptionKey {
             Self::User => "User",
             Self::Port => "Port",
             Self::IdentityFile => "IdentityFile",
+            Self::PasswordAuthentication => "PasswordAuthentication",
         }
     }
 }
@@ -49,6 +57,8 @@ pub struct BlockFields {
     pub user: FieldState,
     pub port: FieldState,
     pub identity_file: FieldState,
+    /// The state of the `PasswordAuthentication` directive.
+    pub password_authentication: FieldState,
 }
 
 impl BlockFields {
@@ -59,6 +69,7 @@ impl BlockFields {
             OptionKey::User => &self.user,
             OptionKey::Port => &self.port,
             OptionKey::IdentityFile => &self.identity_file,
+            OptionKey::PasswordAuthentication => &self.password_authentication,
         }
     }
 }
@@ -92,6 +103,8 @@ pub struct OptionChanges {
     pub user: Change,
     pub port: Change,
     pub identity_file: Change,
+    /// The requested change to `PasswordAuthentication`.
+    pub password_authentication: Change,
 }
 
 impl OptionChanges {
@@ -102,6 +115,7 @@ impl OptionChanges {
             OptionKey::User => &self.user,
             OptionKey::Port => &self.port,
             OptionKey::IdentityFile => &self.identity_file,
+            OptionKey::PasswordAuthentication => &self.password_authentication,
         }
     }
 }
@@ -114,6 +128,8 @@ pub struct NewHost {
     pub user: Option<String>,
     pub port: Option<String>,
     pub identity_file: Option<String>,
+    /// The value to write for `PasswordAuthentication`, if present.
+    pub password_authentication: Option<String>,
 }
 
 /// An edit of one alias and the options of its block.
@@ -185,27 +201,33 @@ pub fn format_arg(value: &str) -> Result<String, EditError> {
     Ok(formatted)
 }
 
-/// Reads the four options of a Host block.
+/// Reads the editable options of a Host block.
 pub fn block_fields(parsed: &ParsedConfig, block_index: usize) -> Result<BlockFields, EditError> {
     let block = host_block(parsed, block_index)?;
-    let [host_name, user, port, identity_file] =
-        OptionKey::ALL.map(|key| match option_lines(body(parsed, block), key) {
-            OptionLines::Absent => FieldState::Absent,
-            OptionLines::Value(_, arg) => FieldState::Value(arg.value.clone()),
-            OptionLines::Unrepresentable(lines) => FieldState::Unrepresentable {
-                lines: lines
-                    .iter()
-                    .map(|line| {
-                        String::from_utf8_lossy(&parsed.bytes()[line.span.clone()]).into_owned()
-                    })
-                    .collect(),
-            },
-        });
+    let [
+        host_name,
+        user,
+        port,
+        identity_file,
+        password_authentication,
+    ] = OptionKey::ALL.map(|key| match option_lines(body(parsed, block), key) {
+        OptionLines::Absent => FieldState::Absent,
+        OptionLines::Value(_, arg) => FieldState::Value(arg.value.clone()),
+        OptionLines::Unrepresentable(lines) => FieldState::Unrepresentable {
+            lines: lines
+                .iter()
+                .map(|line| {
+                    String::from_utf8_lossy(&parsed.bytes()[line.span.clone()]).into_owned()
+                })
+                .collect(),
+        },
+    });
     Ok(BlockFields {
         host_name,
         user,
         port,
         identity_file,
+        password_authentication,
     })
 }
 
@@ -244,7 +266,13 @@ pub fn add_host(parsed: &ParsedConfig, host: &NewHost) -> Result<Vec<u8>, EditEr
     insertion.extend_from_slice(b"Host ");
     insertion.extend_from_slice(name.as_bytes());
     insertion.extend_from_slice(eol);
-    let values = [&host.host_name, &host.user, &host.port, &host.identity_file];
+    let values = [
+        &host.host_name,
+        &host.user,
+        &host.port,
+        &host.identity_file,
+        &host.password_authentication,
+    ];
     for (key, value) in OptionKey::ALL.into_iter().zip(values) {
         if let Some(value) = value {
             write_option(&mut insertion, indent, key, &format_arg(value)?);
@@ -563,6 +591,7 @@ mod tests {
             user: None,
             port: None,
             identity_file: None,
+            password_authentication: None,
         }
     }
 
@@ -675,6 +704,7 @@ mod tests {
                 user: Change::Set("bob".into()),
                 port: Change::Remove,
                 identity_file: Change::Set("~/.ssh/id_ed25519".into()),
+                password_authentication: Change::Keep,
             },
             BASE.replacen(WEB_NAME, WEB_NEW_NAME, 1)
                 .replacen(WEB_USER, WEB_NEW_USER, 1)
@@ -914,6 +944,7 @@ mod tests {
                     user: Change::Remove,
                     port: Change::Remove,
                     identity_file: Change::Remove,
+                    password_authentication: Change::Keep,
                 },
             ),
             b"Host a\n",
@@ -967,6 +998,7 @@ mod tests {
                         "\tidentityfile y # \u{fffd} ".into()
                     ],
                 },
+                password_authentication: FieldState::Absent,
             })
         );
         for change in [Change::Set("z".into()), Change::Remove] {
@@ -1004,6 +1036,111 @@ mod tests {
                 &FieldState::Unrepresentable {
                     lines: vec![line.into()]
                 },
+            );
+        }
+    }
+
+    #[test]
+    fn reads_password_authentication_with_standard_and_alternate_syntax() {
+        for line in [
+            "PasswordAuthentication no",
+            "passwordauthentication=no",
+            "PASSWORDAuthentication = \"no\"",
+        ] {
+            let config = parsed(format!("Host web\n    {line}\n"));
+            assert_eq!(
+                block_fields(&config, 0)
+                    .unwrap()
+                    .get(OptionKey::PasswordAuthentication),
+                &FieldState::Value("no".into()),
+            );
+        }
+    }
+
+    #[test]
+    fn writes_password_authentication_last_in_a_new_host() {
+        let host = NewHost {
+            user: Some("alice".into()),
+            port: Some("22".into()),
+            identity_file: Some("my.key".into()),
+            password_authentication: Some("no".into()),
+            ..new_host()
+        };
+        assert_add(
+            b"",
+            &host,
+            b"Host new\n    HostName h\n    User alice\n    Port 22\n    IdentityFile my.key\n    PasswordAuthentication no\n",
+        );
+    }
+
+    #[test]
+    fn adds_password_authentication_and_preserves_other_lines() {
+        assert_edit(
+            b"Host web\r\n\tUser alice  # \xff\r\n\r\nHost db\r\n  Port 22",
+            edit(
+                0,
+                OptionChanges {
+                    password_authentication: Change::Set("no".into()),
+                    ..Default::default()
+                },
+            ),
+            b"Host web\r\n\tUser alice  # \xff\r\n\tPasswordAuthentication no\r\n\r\nHost db\r\n  Port 22",
+        );
+    }
+
+    #[test]
+    fn changes_or_removes_password_authentication() {
+        let input = b"Host web\n  passwordauthentication=\"yes\"  # policy\n  User alice\n";
+        for (change, expected) in [
+            (
+                Change::Set("no".into()),
+                b"Host web\n  passwordauthentication=no  # policy\n  User alice\n".as_slice(),
+            ),
+            (Change::Remove, b"Host web\n  User alice\n".as_slice()),
+        ] {
+            assert_edit(
+                input,
+                edit(
+                    0,
+                    OptionChanges {
+                        password_authentication: change,
+                        ..Default::default()
+                    },
+                ),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_and_multi_argument_password_authentication_edits() {
+        let key = OptionKey::PasswordAuthentication;
+        for lines in [
+            vec![
+                "  PasswordAuthentication no",
+                "  passwordauthentication=yes",
+            ],
+            vec!["  PasswordAuthentication no extra"],
+        ] {
+            let config = parsed(format!("Host web\n{}\n", lines.join("\n")));
+            assert_eq!(
+                block_fields(&config, 0).unwrap().get(key),
+                &FieldState::Unrepresentable {
+                    lines: lines.into_iter().map(String::from).collect(),
+                },
+            );
+            assert_eq!(
+                apply_host_edit(
+                    &config,
+                    &edit(
+                        0,
+                        OptionChanges {
+                            password_authentication: Change::Remove,
+                            ..Default::default()
+                        },
+                    ),
+                ),
+                Err(EditError::Unrepresentable(key)),
             );
         }
     }

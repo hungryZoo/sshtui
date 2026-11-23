@@ -102,6 +102,7 @@ impl FormState {
                         OptionKey::HostName => values.host_name.clone(),
                         OptionKey::Port => values.port.clone(),
                         OptionKey::IdentityFile => values.identity_files.first().cloned(),
+                        OptionKey::PasswordAuthentication => None,
                     });
                 }
                 FieldState::Unrepresentable { .. } => {}
@@ -202,6 +203,7 @@ impl FormState {
                 address: self.value(FormField::Address).into(),
                 port: self.value(FormField::Port).into(),
                 key_file: self.value(FormField::KeyFile).into(),
+                disable_password: false,
             }
         } else {
             ConnectTarget::Alias(nickname.into())
@@ -219,6 +221,7 @@ impl FormState {
             user: optional(FormField::User),
             port: optional(FormField::Port),
             identity_file: optional(FormField::KeyFile),
+            password_authentication: None,
         }
     }
 
@@ -229,6 +232,7 @@ impl FormState {
             user: change(OptionKey::User, FormField::User),
             port: change(OptionKey::Port, FormField::Port),
             identity_file: change(OptionKey::IdentityFile, FormField::KeyFile),
+            password_authentication: Change::Keep,
         }
     }
 
