@@ -365,8 +365,10 @@ fn new_row_follows_the_hosts_and_shows_its_own_detail_and_help() {
     let (view, hits) = draw_with_hits(&app, 100, 28);
     let rows = screen(&view);
     assert!(rows[7].starts_with("    queue"));
-    assert!(rows[8].starts_with("    + New connection n"));
-    assert_eq!(view.buffer()[(21, 8)].fg, MUTED);
+    assert_eq!(
+        rows[8].split('│').next().unwrap().trim_end(),
+        "    + New connection"
+    );
     assert_text_hit(&view, &hits, "+ New connection", Some(ClickTarget::NewRow));
     assert_eq!(hits.hit(53, 8), Some(&ClickTarget::NewRow));
     assert_eq!(ClickTarget::NewRow.hover_key(), Some(HoverKey::NewRow));
@@ -1226,6 +1228,9 @@ fn header_styles_the_product_name_and_title_independently() {
 fn help_styles_keys_and_descriptions_independently() {
     let view = draw(&mockup_list(), 100, 28);
     let buffer = view.buffer();
+    for x in 2..18 {
+        assert_eq!(buffer[(x, 26)].bg, ACCENT);
+    }
     for x in 2..9 {
         let key = &buffer[(x, 26)];
         assert_eq!((key.fg, key.bg), (BG, ACCENT));
@@ -1233,10 +1238,10 @@ fn help_styles_keys_and_descriptions_independently() {
     }
     for x in 10..17 {
         let description = &buffer[(x, 26)];
-        assert_eq!(description.fg, TEXT);
+        assert_eq!(description.fg, BG);
         assert!(!description.modifier.contains(Modifier::BOLD));
     }
-    for x in 17..20 {
+    for x in 18..20 {
         assert_eq!(buffer[(x, 26)].symbol(), " ");
         assert_eq!(buffer[(x, 26)].bg, BG);
     }
@@ -1244,6 +1249,110 @@ fn help_styles_keys_and_descriptions_independently() {
     assert_eq!(buffer[(20, 26)].fg, TEXT);
     assert_eq!(buffer[(20, 26)].modifier, Modifier::BOLD);
     assert_eq!(buffer[(22, 26)].fg, MUTED);
+}
+
+#[test]
+fn list_help_styles_the_focused_pair_without_moving_the_text() {
+    let mut app = mockup_list();
+    let initial = draw(&app, 100, 28);
+    press(&mut app, KeyCode::Right);
+    let view = draw(&app, 100, 28);
+    assert_eq!(screen(&view)[26], screen(&initial)[26]);
+    let buffer = view.buffer();
+    for x in 2..19 {
+        assert_eq!(buffer[(x, 26)].bg, BG);
+    }
+    assert_eq!(buffer[(3, 26)].fg, TEXT);
+    assert_eq!(buffer[(3, 26)].modifier, Modifier::BOLD);
+    assert_eq!(buffer[(10, 26)].fg, MUTED);
+    assert!(!buffer[(10, 26)].modifier.contains(Modifier::BOLD));
+    for x in 19..27 {
+        assert_eq!(buffer[(x, 26)].bg, ACCENT);
+    }
+    assert_eq!(buffer[(20, 26)].fg, BG);
+    assert_eq!(buffer[(20, 26)].modifier, Modifier::BOLD);
+    assert_eq!(buffer[(22, 26)].fg, BG);
+    assert!(!buffer[(22, 26)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(27, 26)].bg, BG);
+
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Right);
+    }
+    let view = draw(&app, 100, 28);
+    assert_eq!(screen(&view)[26], screen(&initial)[26]);
+    let (start, y) = visible_position(&view, "esc quit");
+    for x in 2..98 {
+        let expected = if (start - 1..=start + 8).contains(&x) {
+            ACCENT
+        } else {
+            BG
+        };
+        assert_eq!(view.buffer()[(x, y)].bg, expected, "column {x}");
+    }
+}
+
+#[test]
+fn a_narrow_list_keeps_the_focused_reload_hint_before_escape() {
+    let mut app = mockup_list();
+    assert!(!screen(&draw(&app, 60, 28))[26].contains("r reload"));
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Right);
+    }
+    let view = draw(&app, 60, 28);
+    assert_eq!(
+        screen(&view)[26],
+        " enter  connect   e edit   d delete   r reload   esc quit"
+    );
+    let (start, y) = visible_position(&view, "r reload");
+    for x in start - 1..=start + 8 {
+        assert_eq!(view.buffer()[(x, y)].bg, ACCENT);
+    }
+}
+
+#[test]
+fn the_first_help_pair_is_a_button_in_forms_confirmations_and_popups() {
+    let mut delete = mockup_list();
+    press(&mut delete, KeyCode::Char('d'));
+    let mut picker = App::new(FakeBackend::new("").with_keys());
+    press(&mut picker, KeyCode::F(2));
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.history_commands = vec!["ssh new.example".into()];
+    let mut history = App::new(backend);
+    press(&mut history, KeyCode::Char('i'));
+
+    for (app, description) in [
+        (mockup_new_form(), "save & connect"),
+        (delete, "cancel"),
+        (picker, "use this key"),
+        (history, "fill form"),
+    ] {
+        let view = draw(&app, 100, 28);
+        let label = format!("enter  {description}");
+        assert_eq!(visible_position(&view, &label), (3, 26));
+        let end = 3 + label.width() as u16;
+        for x in 2..=end {
+            assert_eq!(view.buffer()[(x, 26)].bg, ACCENT, "{label} at {x}");
+        }
+        assert_eq!(view.buffer()[(3, 26)].fg, BG);
+        assert_eq!(view.buffer()[(3, 26)].modifier, Modifier::BOLD);
+        assert_eq!(view.buffer()[(10, 26)].fg, BG);
+        assert!(!view.buffer()[(10, 26)].modifier.contains(Modifier::BOLD));
+        assert_eq!(view.buffer()[(end + 1, 26)].bg, BG);
+    }
+}
+
+#[test]
+fn an_invalid_form_styles_the_whole_first_button_as_disabled() {
+    let app = App::new(FakeBackend::new(""));
+    assert!(app.form_first_error().is_some());
+    let view = draw(&app, 100, 28);
+    let buffer = view.buffer();
+    for x in 2..18 {
+        assert_eq!((buffer[(x, 26)].fg, buffer[(x, 26)].bg), (MUTED, ROW));
+    }
+    assert_eq!(buffer[(3, 26)].modifier, Modifier::BOLD);
+    assert!(!buffer[(10, 26)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(18, 26)].bg, BG);
 }
 
 #[test]
@@ -1788,10 +1897,20 @@ fn list_key_hints_register_whole_pairs_and_leave_gaps_unmapped() {
     ] {
         assert_text_hit(&view, &hits, text, Some(ClickTarget::Key(code)));
     }
-    assert!((17..20).all(|column| hits.hit(column, 26).is_none()));
+    assert_eq!(hits.hit(17, 26), Some(&ClickTarget::Key(KeyCode::Enter)));
+    assert_eq!(hits.hit(18, 26), None);
+    for column in [19, 26] {
+        assert_eq!(
+            hits.hit(column, 26),
+            Some(&ClickTarget::Key(KeyCode::Char('e')))
+        );
+    }
+    assert_eq!(hits.hit(27, 26), None);
 
     let (view, hits) = draw_with_hits(&app, 18, 12);
     assert_eq!(hits.hit(14, 11), Some(&ClickTarget::Key(KeyCode::Enter)));
+    assert_eq!(hits.hit(15, 11), Some(&ClickTarget::Key(KeyCode::Enter)));
+    assert_eq!(hits.hit(16, 11), None);
     assert_eq!(hits.hit(17, 11), None);
     assert_eq!(screen(&view)[11], " enter  connect");
 }
@@ -2265,7 +2384,8 @@ fn popup_help_hits_take_priority_over_the_outside_region() {
         Some(ClickTarget::Key(KeyCode::Esc)),
     );
     assert_text_hit(&view, &hits, "↑↓ select", Some(ClickTarget::Outside));
-    assert_eq!(hits.hit(22, 26), Some(&ClickTarget::Outside));
+    assert_eq!(hits.hit(22, 26), Some(&ClickTarget::Key(KeyCode::Enter)));
+    assert_eq!(hits.hit(23, 26), Some(&ClickTarget::Outside));
 
     let mut acknowledgment = edit_confirmation();
     press(&mut acknowledgment, KeyCode::Enter);
@@ -2416,12 +2536,67 @@ fn hovering_a_read_only_field_brightens_its_label_only() {
 fn hovering_an_ordinary_hint_brightens_its_whole_pair_and_description() {
     let app = mockup_list();
     let view = fully_hovered(&app, HoverKey::Key(KeyCode::Char('e')));
-    for x in 20..26 {
-        assert_eq!(view.buffer()[(x, 26)].bg, ROW);
+    for x in 19..27 {
+        assert_eq!(view.buffer()[(x, 26)].bg, ACCENT);
     }
-    assert_eq!(view.buffer()[(19, 26)].bg, BG);
-    assert_eq!(view.buffer()[(26, 26)].bg, BG);
-    assert_eq!(view.buffer()[(22, 26)].fg, TEXT);
+    assert_eq!(view.buffer()[(18, 26)].bg, BG);
+    assert_eq!(view.buffer()[(27, 26)].bg, BG);
+    assert_eq!(view.buffer()[(20, 26)].fg, BG);
+    assert_eq!(view.buffer()[(20, 26)].modifier, Modifier::BOLD);
+    assert_eq!(view.buffer()[(22, 26)].fg, BG);
+    assert!(!view.buffer()[(22, 26)].modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn hovering_an_ordinary_hint_blends_through_the_middle_of_the_fade() {
+    let app = mockup_list();
+    let start = Instant::now();
+    let mut hover = Hover::default();
+    hover.set(Some(HoverKey::Key(KeyCode::Char('e'))), start);
+    let leave = start + Hover::DURATION;
+    hover.set(None, leave);
+    let (view, _) = draw_with_style(
+        &app,
+        100,
+        28,
+        ColorMode::TrueColor,
+        Some((&hover, leave + Hover::DURATION / 2)),
+    );
+    for x in 19..27 {
+        assert_eq!(view.buffer()[(x, 26)].bg, Color::Rgb(66, 117, 111));
+    }
+    assert_eq!(view.buffer()[(20, 26)].fg, Color::Rgb(119, 121, 127));
+    assert_eq!(view.buffer()[(22, 26)].fg, Color::Rgb(81, 86, 94));
+}
+
+#[test]
+fn ansi_help_hover_switches_to_a_button_at_half_strength() {
+    let app = mockup_list();
+    let start = Instant::now();
+    let mut hover = Hover::default();
+    hover.set(Some(HoverKey::Key(KeyCode::Char('e'))), start);
+    let leave = start + Hover::DURATION;
+    hover.set(None, leave);
+    for (elapsed, bg, key_fg, description_fg) in [
+        (75, Color::Cyan, Color::Black, Color::Black),
+        (76, Color::Reset, Color::Reset, Color::DarkGray),
+    ] {
+        let (view, _) = draw_with_style(
+            &app,
+            100,
+            28,
+            ColorMode::Ansi,
+            Some((&hover, leave + Duration::from_millis(elapsed))),
+        );
+        let buffer = view.buffer();
+        for x in 19..27 {
+            assert_eq!(buffer[(x, 26)].bg, bg);
+        }
+        assert_eq!(buffer[(20, 26)].fg, key_fg);
+        assert_eq!(buffer[(22, 26)].fg, description_fg);
+        assert_eq!(buffer[(18, 26)].bg, Color::Reset);
+        assert_eq!(buffer[(27, 26)].bg, Color::Reset);
+    }
 }
 
 #[test]
@@ -2444,10 +2619,10 @@ fn hovering_the_new_row_uses_host_row_backgrounds() {
 fn hovering_the_primary_action_brightens_its_badge() {
     let app = mockup_list();
     let view = fully_hovered(&app, HoverKey::Key(KeyCode::Enter));
-    for x in 2..9 {
+    for x in 2..18 {
         assert_eq!(view.buffer()[(x, 26)].bg, HOVER_ACCENT);
     }
-    assert_eq!(view.buffer()[(10, 26)].bg, BG);
+    assert_eq!(view.buffer()[(18, 26)].bg, BG);
 }
 
 #[test]
@@ -2940,6 +3115,41 @@ fn korean_list_shows_localized_rows_and_aligned_details() {
     let (_, new_secondary) = new_help.split_once("새 접속   ").unwrap();
     assert_eq!(host_secondary, new_secondary);
     assert!(new_secondary.ends_with("esc 필터 해제"));
+}
+
+#[test]
+fn korean_list_buttons_cover_both_cells_of_wide_letters() {
+    let mut app = App::with_lang(FakeBackend::new(HOSTS), crate::i18n::Lang::Ko);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    let mut hits = HitMap::default();
+    let drawn = terminal
+        .draw(|frame| hits = render(frame, &app, &Theme::new(ColorMode::TrueColor), None))
+        .unwrap();
+    // The terminal writes a wide glyph at once, so its continuation is skipped by the diff.
+    let buffer = drawn.buffer;
+    for x in 2..98 {
+        let expected = if (25..33).contains(&x) { ACCENT } else { BG };
+        assert_eq!(buffer[(x, 26)].bg, expected, "column {x}");
+    }
+    for x in 25..33 {
+        assert_eq!(hits.hit(x, 26), Some(&ClickTarget::Key(KeyCode::Char('d'))));
+    }
+    for x in 28..32 {
+        assert_eq!(buffer[(x, 26)].fg, BG);
+        assert!(!buffer[(x, 26)].modifier.contains(Modifier::BOLD));
+    }
+    assert_eq!(hits.hit(24, 26), None);
+    assert_eq!(hits.hit(33, 26), None);
+
+    let view = terminal.backend();
+    let new_row = visible_row(view, 8);
+    assert_eq!(
+        new_row.split('│').next().unwrap().trim_end(),
+        "    + 새 접속"
+    );
+    assert_eq!(visible_position(view, "d 삭제"), (26, 26));
 }
 
 #[test]

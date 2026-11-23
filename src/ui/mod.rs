@@ -24,7 +24,7 @@ pub use self::theme::{ColorMode, Theme};
 use self::layout::{
     below, header_line, inset, left, padded_cells, render_lines, right_of, row, rule,
 };
-use self::theme::{HOVER_ACCENT, PLAIN, ROW, bold};
+use self::theme::{PLAIN, bold};
 
 type KeyHint = (&'static str, &'static str, Option<KeyCode>);
 type KeyHints = (bool, Vec<KeyHint>);
@@ -169,7 +169,7 @@ fn headline(title: String, style: Style, theme: &Theme) -> Line<'static> {
 
 fn render_help<B: Backend>(
     frame: &mut Frame,
-    (enabled, hints): KeyHints,
+    (enabled, mut hints): KeyHints,
     mut area: Rect,
     theme: &Theme,
     hits: &mut HitMap,
@@ -184,13 +184,19 @@ fn render_help<B: Backend>(
     let gap = usize::from(GAP);
     let available = usize::from(area.width);
     let last = hints.len().saturating_sub(1);
-    let mut prefix = last;
-    if last >= 2 && pair_width(0, &hints[0]) + gap + pair_width(last, &hints[last]) <= available {
+    let on_list = matches!(app.mode(), Mode::List) && !app.is_filtering();
+    let mut focused = if on_list {
+        app.list_action().index()
+    } else {
+        0
+    };
+    if last >= 2 && {
+        let first_with_gap = pair_width(0, &hints[0]) + gap;
+        first_with_gap + pair_width(last, &hints[last]) <= available
+            || (focused > 0 && first_with_gap + pair_width(focused, &hints[focused]) <= available)
+    } {
         // Keep filtered-list hints stable as the selection moves between host and new rows.
-        let reserved = if matches!(app.mode(), Mode::List)
-            && !app.is_filtering()
-            && !app.filter().value().is_empty()
-        {
+        let reserved = if on_list && !app.filter().value().is_empty() {
             let text = app.lang().text();
             text.connect
                 .width()
@@ -206,55 +212,67 @@ fn render_help<B: Backend>(
             .sum::<usize>()
             + last * gap
             + reserved;
-        while total > available && prefix > 1 {
-            prefix -= 1;
-            total -= pair_width(prefix, &hints[prefix]) + gap;
+        for index in (1..last).rev() {
+            if total <= available {
+                break;
+            }
+            if index != focused {
+                total -= pair_width(index, &hints.remove(index)) + gap;
+                focused -= usize::from(index < focused);
+            }
         }
     }
 
-    for (index, hint) in hints[..prefix].iter().chain(&hints[last..]).enumerate() {
+    for (index, hint) in hints.iter().enumerate() {
         let width = pair_width(index, hint);
         if width > usize::from(area.width) {
+            if index != 0 && index == focused {
+                continue;
+            }
             break;
         }
         let width = width as u16;
         let &(key, description, code) = hint;
+        let enabled = index != 0 || enabled;
         let t = code
-            .filter(|_| index != 0 || enabled)
+            .filter(|_| enabled)
             .map_or(0.0, |code| intensity(hover, HoverKey::Key(code)));
-        let (key, key_style, description_style, pair_style) = if index == 0 {
-            (
-                format!(" {key} "),
-                theme.hover_background(theme.badge(enabled), HOVER_ACCENT, t),
-                if enabled { theme.text } else { theme.muted },
-                PLAIN,
-            )
+        let key_style = if code == Some(KeyCode::F(3)) && app.picker_unavailable_reason().is_some()
+        {
+            theme.muted
         } else {
-            let style = if code == Some(KeyCode::F(3)) && app.picker_unavailable_reason().is_some()
-            {
-                theme.muted
-            } else {
-                theme.text
-            };
-            (
-                key.to_owned(),
-                bold(style),
-                theme.hover_muted(t),
-                theme.hover_background(PLAIN, ROW, t),
-            )
+            theme.text
         };
+        let (button_style, key_style, description_style) =
+            theme.help_styles(index == focused, enabled, key_style, t);
         let rect = left(area, width);
-        frame.render_widget(
-            Line::from(vec![
-                Span::styled(key, theme.hover_text(key_style, t)),
-                Span::raw(" "),
-                Span::styled(description, description_style),
-            ])
-            .style(pair_style),
-            rect,
+        let (label, key_width) = if index == 0 {
+            (format!(" {key}  {description}"), key.width() as u16 + 2)
+        } else {
+            (format!("{key} {description}"), key.width() as u16)
+        };
+        let leading = u16::from(index != 0);
+        let trailing = u16::from(area.width > width);
+        let button = Rect::new(
+            rect.x - leading,
+            rect.y,
+            width + leading + trailing,
+            rect.height,
         );
+        frame.render_widget(Line::raw(label), rect);
+        let buffer = frame.buffer_mut();
+        // Apply styles to display cells, including continuation cells of wide glyphs.
+        buffer.set_style(
+            button,
+            Style {
+                bg: button_style.bg.or(theme.base.bg),
+                ..button_style
+            },
+        );
+        buffer.set_style(left(rect, key_width), key_style);
+        buffer.set_style(right_of(rect, key_width + 1), description_style);
         if let Some(code) = code {
-            hits.add(rect, ClickTarget::Key(code));
+            hits.add(button, ClickTarget::Key(code));
         }
         area = right_of(area, width.saturating_add(GAP));
     }

@@ -3,12 +3,63 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::{ConfigSet, FieldState, HostEntry, OptionKey, block_fields};
 use crate::ssh::effective::EffectiveConfig;
 
 use super::{Backend, TextInput};
+
+/// An action on the host list's key bar, in display order.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ListAction {
+    /// Connect to the selected host or open the new connection form.
+    #[default]
+    Open,
+    /// Edit the selected host.
+    Edit,
+    /// Review deletion of the selected host.
+    Delete,
+    /// Review removal of the selected host's known keys.
+    Forget,
+    /// Start editing the host filter.
+    Filter,
+    /// Reload the host configuration.
+    Reload,
+    /// Clear the applied filter or quit.
+    Leave,
+}
+
+impl ListAction {
+    /// All actions in display order.
+    pub const ALL: [Self; 7] = [
+        Self::Open,
+        Self::Edit,
+        Self::Delete,
+        Self::Forget,
+        Self::Filter,
+        Self::Reload,
+        Self::Leave,
+    ];
+
+    /// The action's position in the key bar.
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The key that runs this action directly.
+    pub(crate) fn shortcut(self) -> KeyCode {
+        match self {
+            Self::Open => KeyCode::Enter,
+            Self::Edit => KeyCode::Char('e'),
+            Self::Delete => KeyCode::Char('d'),
+            Self::Forget => KeyCode::Char('x'),
+            Self::Filter => KeyCode::Char('/'),
+            Self::Reload => KeyCode::Char('r'),
+            Self::Leave => KeyCode::Esc,
+        }
+    }
+}
 
 /// A filtered list row and the writability of its source file.
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +77,7 @@ pub(super) struct ListState {
     filter: TextInput,
     pub(super) filtering: bool,
     pub(super) selection: usize,
+    pub(super) action: ListAction,
     visible: Vec<usize>,
     summaries: Vec<String>,
     effective: HashMap<String, Result<EffectiveConfig, String>>,
@@ -33,6 +85,16 @@ pub(super) struct ListState {
 }
 
 impl ListState {
+    pub(super) fn move_action(&mut self, right: bool) {
+        let index = self.action.index();
+        let next = if right {
+            (index + 1).min(ListAction::ALL.len() - 1)
+        } else {
+            index.saturating_sub(1)
+        };
+        self.action = ListAction::ALL[next];
+    }
+
     pub(super) fn rows<'a>(
         &'a self,
         config: &'a ConfigSet,
@@ -130,6 +192,7 @@ impl ListState {
         config: &ConfigSet,
         preferred: Option<&str>,
     ) {
+        self.action = ListAction::Open;
         self.effective.clear();
         self.writable.clear();
         self.summaries = config

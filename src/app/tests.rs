@@ -524,6 +524,160 @@ fn list_navigation_stops_at_boundaries_and_accepts_alias_keys() {
     assert_eq!(app.selection(), Some(0));
 }
 
+fn focus_list_action(app: &mut TestApp, action: ListAction) {
+    assert_eq!(app.list_action(), ListAction::Open);
+    for _ in 0..action.index() {
+        key(app, KeyCode::Right);
+    }
+    assert_eq!(app.list_action(), action);
+}
+
+#[test]
+fn list_action_focus_moves_in_order_and_stops_without_changing_the_row() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.list_action(), ListAction::Open);
+    for action in ListAction::ALL[1..]
+        .iter()
+        .copied()
+        .chain([ListAction::Leave])
+    {
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.list_action(), action);
+        assert_eq!(app.selection(), Some(1));
+    }
+    for action in ListAction::ALL[..6]
+        .iter()
+        .rev()
+        .copied()
+        .chain([ListAction::Open])
+    {
+        key(&mut app, KeyCode::Left);
+        assert_eq!(app.list_action(), action);
+        assert_eq!(app.selection(), Some(1));
+    }
+}
+
+#[test]
+fn enter_runs_the_focused_edit_delete_and_forget_actions() {
+    let (backend, _) = forget_backend(1);
+    let mut app = App::new(backend);
+    key(&mut app, KeyCode::End);
+
+    focus_list_action(&mut app, ListAction::Edit);
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.form().unwrap().kind(), FormKind::Edit { .. }));
+    assert_eq!(app.list_action(), ListAction::Open);
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Delete);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(confirm(&app).kind(), ConfirmKind::Delete);
+    assert_eq!(confirm(&app).choice(), Some(ConfirmChoice::Cancel));
+    assert_eq!(app.list_action(), ListAction::Open);
+    key(&mut app, KeyCode::Esc);
+
+    focus_list_action(&mut app, ListAction::Forget);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(confirm(&app).kind(), ConfirmKind::Forget);
+    assert_eq!(*app.backend().forget_calls.borrow(), ["queue.example.com"]);
+    assert_eq!(app.list_action(), ListAction::Open);
+}
+
+#[test]
+fn enter_runs_the_focused_filter_reload_and_leave_actions() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+
+    focus_list_action(&mut app, ListAction::Filter);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.is_filtering());
+    assert_eq!(app.list_action(), ListAction::Open);
+    key(&mut app, KeyCode::Right);
+    assert!(app.is_filtering());
+    assert_eq!(app.list_action(), ListAction::Open);
+    app.handle_paste("web");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(names(&app), ["web"]);
+
+    focus_list_action(&mut app, ListAction::Reload);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.backend().load_calls.get(), 2);
+    assert_eq!(status(&app, StatusLevel::Info), "Reloaded");
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Leave);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.filter().value(), "");
+    assert_eq!(names(&app), ["web", "db", "queue"]);
+    assert_eq!(app.exit(), None);
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Leave);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.exit(), Some(&Exit::Quit));
+    assert_eq!(app.list_action(), ListAction::Open);
+}
+
+#[test]
+fn list_action_focus_resets_on_click_wheel_paste_reload_and_other_keys() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    focus_list_action(&mut app, ListAction::Delete);
+    app.handle_click(ClickTarget::HostRow(1), false);
+    assert_eq!(app.selection(), Some(1));
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Delete);
+    app.handle_scroll(false);
+    assert_eq!(app.selection(), Some(0));
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Delete);
+    app.handle_paste("web");
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Delete);
+    app.reload_selected();
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    focus_list_action(&mut app, ListAction::Delete);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.list_action(), ListAction::Open);
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["db".into()])));
+}
+
+#[test]
+fn clicking_the_open_hint_runs_open_even_with_another_action_focused() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    focus_list_action(&mut app, ListAction::Delete);
+    app.handle_click(ClickTarget::Key(KeyCode::Enter), false);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["web".into()])));
+    assert_eq!(app.list_action(), ListAction::Open);
+}
+
+#[test]
+fn enter_edits_nothing_on_the_new_row_then_opens_the_new_form() {
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    key(&mut app, KeyCode::End);
+    key(&mut app, KeyCode::Down);
+    assert!(app.new_row_selected());
+
+    focus_list_action(&mut app, ListAction::Edit);
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.new_row_selected());
+    assert_eq!(app.exit(), None);
+    assert_eq!(app.list_action(), ListAction::Open);
+
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.form().unwrap().kind(), FormKind::New));
+    assert_eq!(app.list_action(), ListAction::Open);
+}
+
 #[test]
 fn last_host_selects_a_saved_alias_only_at_startup() {
     for (last_host, index, alias) in [

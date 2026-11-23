@@ -30,7 +30,7 @@ pub use self::confirm::{ConfirmChoice, ConfirmKind, ConfirmState, KeyPickerState
 pub use self::form::{FormField, FormKind, FormState};
 pub use self::import::ImportState;
 pub use self::input::TextInput;
-pub use self::list::HostRow;
+pub use self::list::{HostRow, ListAction};
 pub use self::update::UpdateState;
 
 use self::confirm::ConfirmAction;
@@ -187,6 +187,7 @@ impl<B: Backend> App<B> {
         }
         self.status = None;
         if is_ctrl(key, 'c') {
+            self.list.action = ListAction::Open;
             self.exit = Some(Exit::Quit);
             return;
         }
@@ -208,6 +209,7 @@ impl<B: Backend> App<B> {
         if self.exit.is_some() || self.key_install.is_some() {
             return;
         }
+        self.list.action = ListAction::Open;
 
         let code = match (&mut self.mode, target) {
             (_, ClickTarget::Key(code)) => code,
@@ -278,6 +280,7 @@ impl<B: Backend> App<B> {
         if self.exit.is_some() || self.key_install.is_some() {
             return;
         }
+        self.list.action = ListAction::Open;
         match &mut self.mode {
             Mode::Form(form) => form.paste(text),
             Mode::List if self.list.filtering => {
@@ -412,6 +415,11 @@ impl<B: Backend> App<B> {
     /// Returns whether the list is accepting filter input.
     pub fn is_filtering(&self) -> bool {
         self.list.filtering
+    }
+
+    /// Returns the action that Enter runs on the host list.
+    pub fn list_action(&self) -> ListAction {
+        self.list.action
     }
 
     /// Returns the cached effective settings or error for the selected row.
@@ -562,7 +570,13 @@ impl<B: Backend> App<B> {
     }
 
     fn handle_list_key(&mut self, key: KeyEvent) -> Mode {
-        if !is_plain(key) {
+        let plain = is_plain(key);
+        if plain && !self.list.filtering && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            self.list.move_action(key.code == KeyCode::Right);
+            return Mode::List;
+        }
+        let action = std::mem::take(&mut self.list.action);
+        if !plain {
             return Mode::List;
         }
         if self.list.filtering {
@@ -581,7 +595,12 @@ impl<B: Backend> App<B> {
             return Mode::List;
         }
 
-        match key.code {
+        let code = if key.code == KeyCode::Enter {
+            action.shortcut()
+        } else {
+            key.code
+        };
+        match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.list.select(self.list.selection.saturating_sub(1));
             }

@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Backend, ClickTarget, HostRow};
+use crate::app::{App, Backend, ClickTarget, HostRow, ListAction};
 
 use super::layout::{
     below, column_width, left, put, render_lines, right_of, row, rule, visible_rows,
@@ -36,15 +36,21 @@ pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
     };
     (
         new || app.selection().is_some(),
-        vec![
-            ("enter", enter, Some(KeyCode::Enter)),
-            ("e", text.edit, Some(KeyCode::Char('e'))),
-            ("d", text.delete, Some(KeyCode::Char('d'))),
-            ("x", text.forget_known_host, Some(KeyCode::Char('x'))),
-            ("/", text.filter, Some(KeyCode::Char('/'))),
-            ("r", text.reload, Some(KeyCode::Char('r'))),
-            ("esc", escape, Some(KeyCode::Esc)),
-        ],
+        ListAction::ALL
+            .into_iter()
+            .map(|action| {
+                let (key, description) = match action {
+                    ListAction::Open => ("enter", enter),
+                    ListAction::Edit => ("e", text.edit),
+                    ListAction::Delete => ("d", text.delete),
+                    ListAction::Forget => ("x", text.forget_known_host),
+                    ListAction::Filter => ("/", text.filter),
+                    ListAction::Reload => ("r", text.reload),
+                    ListAction::Leave => ("esc", escape),
+                };
+                (key, description, Some(action.shortcut()))
+            })
+            .collect(),
     )
 }
 
@@ -229,20 +235,11 @@ fn render_hosts<B: Backend>(
         if index == new_index {
             let t = intensity(hover, HoverKey::NewRow);
             render_row_selection(frame, rect, selected, t, theme);
-            let label = text.new_row;
-            let (name, summary) = row_columns(rect, name_width);
             put(
                 frame,
-                name,
-                label,
+                row_columns(rect, name_width).0,
+                text.new_row,
                 theme.hover_text(theme.selected(bold(theme.accent), selected), t),
-            );
-            let padding = u16::from(label.width() == usize::from(name.width) && summary.width > 1);
-            put(
-                frame,
-                right_of(summary, padding),
-                "n",
-                theme.selected(PLAIN, selected).patch(theme.hover_muted(t)),
             );
             hits.add(rect, ClickTarget::NewRow);
         } else if let Some(host) = hosts.next() {

@@ -106,11 +106,11 @@ impl Theme {
             row,
             removed: removed.fg(error),
             added: added.fg(ok),
-            badge: bold(PLAIN.bg(accent).fg(badge_text)),
-            disabled_badge: bold(match mode {
+            badge: PLAIN.bg(accent).fg(badge_text),
+            disabled_badge: match mode {
                 ColorMode::TrueColor => row.fg(muted),
                 ColorMode::Ansi => PLAIN.fg(muted),
-            }),
+            },
         }
     }
 
@@ -195,11 +195,40 @@ impl Theme {
     }
 
     pub(super) fn badge(&self, enabled: bool) -> Style {
-        if enabled {
+        bold(if enabled {
             self.badge
         } else {
             self.disabled_badge
+        })
+    }
+
+    pub(super) fn help_styles(
+        &self,
+        focused: bool,
+        enabled: bool,
+        key: Style,
+        t: f32,
+    ) -> (Style, Style, Style) {
+        if focused || (self.mode == ColorMode::Ansi && t >= 0.5) {
+            let button = if enabled {
+                self.hover_background(self.badge, HOVER_ACCENT, t)
+            } else {
+                self.disabled_badge
+            };
+            return (button, bold(button), button);
         }
+        if t == 0.0 || self.mode == ColorMode::Ansi {
+            return (PLAIN, bold(key), self.muted);
+        }
+
+        let background = self.badge.bg.unwrap_or(Color::Reset);
+        let foreground = self.badge.fg.unwrap_or(Color::Reset);
+        let fade = |style: Style| style.fg(mix(style.fg.unwrap_or(Color::Reset), foreground, t));
+        (
+            self.hover_background(fade(self.text), background, t),
+            bold(fade(key)),
+            fade(self.muted),
+        )
     }
 
     pub(super) fn status(&self, level: StatusLevel) -> Style {
