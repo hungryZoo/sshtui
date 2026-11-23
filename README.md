@@ -166,9 +166,6 @@ curl -fsSL https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.sh | 
 
 ## 2. 설치
 
-<!-- 첫 릴리스 게시 후 바로 아래 안내 삭제 -->
-> 현재 `hungryZoo/sshtui` 저장소와 첫 릴리스는 게시 전 상태. 첫 릴리스 게시 전에는 설치 스크립트, Homebrew, 패키지 경로가 동작하지 않으며 로컬 소스에서만 설치 가능.
-
 공통 실행 요건은 대화형 터미널과 `PATH`에서 찾을 수 있는 OpenSSH 클라이언트(`ssh` 또는 `ssh.exe`).
 
 ### 설치 스크립트 (권장)
@@ -277,13 +274,13 @@ Copy-Item -LiteralPath '.\sshtui-extracted\sshtui.exe' -Destination $bin
 
 ### 소스에서 설치
 
-Rust stable 툴체인 필요. GitHub 저장소 공개 후 Git에서 바로 설치 가능.
+Rust stable 툴체인 필요. GitHub 저장소에서 바로 설치 가능.
 
 ```bash
 cargo install --git https://github.com/hungryZoo/sshtui --locked
 ```
 
-공개 후 클론해서 설치하는 방법. 이미 로컬에 소스가 있으면 저장소 루트에서 마지막 줄만 실행.
+저장소를 클론해서 설치하는 방법. 이미 로컬에 소스가 있으면 저장소 루트에서 마지막 줄만 실행.
 
 ```bash
 git clone https://github.com/hungryZoo/sshtui.git

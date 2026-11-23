@@ -12,15 +12,16 @@ mkdir -p "$DIST_DIR"
 write_checksums() (
     cd "$DIST_DIR"
     shopt -s nullglob dotglob
-    checksums="$(mktemp .SHA256SUMS.XXXXXX)"
-    trap 'rm -f "$checksums"' EXIT
+    checksum_dir="$(mktemp -d .checksums.XXXXXX)"
+    trap 'rm -rf "$checksum_dir"' EXIT
+    checksums="$checksum_dir/SHA256SUMS"
     if command -v sha256sum >/dev/null 2>&1; then
         hash=(sha256sum)
     else
         hash=(shasum -a 256)
     fi
     for asset in *; do
-        [[ -f "$asset" && "$asset" != SHA256SUMS && "$asset" != "$checksums" ]] || continue
+        [[ -f "$asset" && "$asset" != SHA256SUMS ]] || continue
         "${hash[@]}" -- "$asset"
     done > "$checksums"
     chmod 644 "$checksums"
@@ -52,6 +53,8 @@ package_archive() (
             (cd "$stage" && zip -q package.zip "$executable" README.md LICENSE)
         else
             # Use relative paths so PowerShell can consume them from Git Bash.
+            # PowerShell expands the variables in the command.
+            # shellcheck disable=SC2016
             ZIP_STAGE="$stage" ZIP_BIN="$executable" pwsh -NoProfile -NonInteractive -Command '
                 $ErrorActionPreference = "Stop"
                 $files = $env:ZIP_BIN, "README.md", "LICENSE" | ForEach-Object { Join-Path $env:ZIP_STAGE $_ }

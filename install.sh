@@ -172,14 +172,20 @@ print_path_hint() {
             ;;
         csh|tcsh)
             quoted="$(printf '%s' "$BIN_DIR" | sed 's/[\\"$`!]/\\&/g')"
+            # The printed command must expand $path in csh or tcsh.
+            # shellcheck disable=SC2016
             printf 'set path = ("%s" $path)\n' "$quoted"
             ;;
         nu)
             quoted="$(printf '%s' "$BIN_DIR" | sed 's/[\\"]/\\&/g')"
+            # The printed command refers to $env.PATH in Nushell.
+            # shellcheck disable=SC2016
             printf '$env.PATH = ($env.PATH | prepend "%s")\n' "$quoted"
             ;;
         *)
             quoted="$(printf '%s' "$BIN_DIR" | sed 's/[\\"$`]/\\&/g')"
+            # The printed command must expand $PATH in the user's shell.
+            # shellcheck disable=SC2016
             printf 'export PATH="%s:$PATH"\n' "$quoted"
             ;;
     esac

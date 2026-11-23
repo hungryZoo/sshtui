@@ -27,8 +27,9 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
     compress(&mut state, &final_block);
 
     let mut digest = [0; 20];
-    for (bytes, word) in digest.chunks_exact_mut(4).zip(state) {
-        bytes.copy_from_slice(&word.to_be_bytes());
+    let (digest_words, _) = digest.as_chunks_mut::<4>();
+    for (bytes, word) in digest_words.iter_mut().zip(state) {
+        *bytes = word.to_be_bytes();
     }
     digest
 }

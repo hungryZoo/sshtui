@@ -5,7 +5,6 @@ edition = "2024"
 authors = ["hungryZoo"]
 description = "A TUI wrapper around the system ssh client that stores hosts in ~/.ssh/config"
 license = "MIT"
-homepage = "https://github.com/hungryZoo/sshtui"
 repository = "https://github.com/hungryZoo/sshtui"
 readme = "README.md"
 keywords = ["ssh", "tui", "terminal", "openssh"]
