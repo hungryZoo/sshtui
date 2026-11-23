@@ -852,24 +852,24 @@ Windows 경로 기준은 Local AppData 알려진 폴더.
 
 ### 릴리스 대상
 
-첫 릴리스에 포함할 대상 목록. macOS의 실행 확인 범위는 로컬 빌드의 `--version`.
+`v0.1.0`에 게시된 릴리스 대상과 확인 수준.
 
 | Triple | 용도 | 정적 링크 | 확인 수준 |
 |---|---|---|---|
-| `aarch64-apple-darwin` | macOS Apple Silicon | 아니요 | 실행 확인 (macOS) |
-| `x86_64-apple-darwin` | macOS Intel | 아니요 | Rosetta에서 실행 확인 |
-| `x86_64-unknown-linux-musl` | Linux x86_64 | 예(musl) | 빌드만 확인 |
-| `aarch64-unknown-linux-musl` | Linux ARM64 | 예(musl) | 빌드만 확인 |
-| `armv7-unknown-linux-musleabihf` | Linux ARMv7, 32비트 hard-float | 예(musl) | 빌드만 확인 |
-| `arm-unknown-linux-musleabihf` | Linux ARMv6, 32비트 hard-float | 예(musl) | 빌드만 확인 |
-| `x86_64-pc-windows-msvc` | Windows x64 | C 런타임만 정적 구성 | 미검증, CI에서 빌드 예정 |
-| `aarch64-pc-windows-msvc` | Windows ARM64 | C 런타임만 정적 구성 | 미검증, CI에서 빌드 예정 |
+| `aarch64-apple-darwin` | macOS Apple Silicon | 아니요 | 릴리스 자산 실행 확인 (macOS) |
+| `x86_64-apple-darwin` | macOS Intel | 아니요 | 릴리스 자산을 Rosetta에서 실행 확인 |
+| `x86_64-unknown-linux-musl` | Linux x86_64 | 예(musl) | CI 러너에서 `--version`과 설치 스크립트 실행 확인 |
+| `aarch64-unknown-linux-musl` | Linux ARM64 | 예(musl) | CI에서 빌드와 정적 링크 확인. 실기기 실행 미검증 |
+| `armv7-unknown-linux-musleabihf` | Linux ARMv7, 32비트 hard-float | 예(musl) | CI에서 빌드와 정적 링크, CPU 속성 확인. 실기기 실행 미검증 |
+| `arm-unknown-linux-musleabihf` | Linux ARMv6, 32비트 hard-float | 예(musl) | CI에서 빌드와 정적 링크, CPU 속성 확인. 실기기 실행 미검증 |
+| `x86_64-pc-windows-msvc` | Windows x64 | C 런타임만 정적 구성 | CI 러너에서 빌드와 `--version` 실행 확인. 대화형 실행과 `install.ps1` 미검증 |
+| `aarch64-pc-windows-msvc` | Windows ARM64 | C 런타임만 정적 구성 | CI 러너에서 빌드와 `--version` 실행 확인. 대화형 실행과 `install.ps1` 미검증 |
 
 Linux 4개 대상은 musl 정적 링크로 호스트 glibc 버전에 의존하지 않으며, macOS 2개 대상의 바이너리 최소 버전은 11.0.
 
 ### macOS
 
-Apple Silicon에서는 `install.sh`가 Rosetta 셸에서도 하드웨어를 감지해 ARM64 자산 선택. Apple Silicon에서 두 대상의 `--version` 실행 확인(Intel 대상은 Rosetta).
+Apple Silicon에서는 `install.sh`가 Rosetta 셸에서도 하드웨어를 감지해 ARM64 자산 선택. 게시된 두 자산의 `minos` 11.0과 `--version` 확인(ARM64는 직접 실행, Intel은 Rosetta에서 실행). ARM64 자산의 `codesign -v` 및 임시 `HOME`에서 게시된 릴리스의 `install.sh` 설치 확인.
 
 브라우저로 받은 압축 파일을 푼 뒤 격리 속성으로 실행이 차단되면, 자산 검증 후 바이너리에서 속성 제거.
 
@@ -879,25 +879,25 @@ xattr -d com.apple.quarantine ./sshtui
 
 ### Linux
 
-x86_64, ARM64, ARMv7, ARMv6 대상의 빌드와 정적 링크 확인. 실제 Linux 환경에서의 실행은 미검증.
+GitHub Actions에서 x86_64, ARM64, ARMv7, ARMv6 대상의 빌드와 `readelf` 정적 링크 검사 통과. ARMv7과 ARMv6의 `Tag_CPU_arch`는 각각 v7, v6 확인. x86_64 Linux 러너에서 `file://` 기준 URL로 설치 스크립트 실행 및 `--version` 확인. TUI 대화형 실행, 패키지 설치, ARM 실기기 실행은 미검증.
 
 ### Windows
 
 Windows의 선택적 기능에서 OpenSSH 클라이언트 설치 및 `PATH`의 `ssh.exe` 확인 필요. MSVC C 런타임의 정적 링크 설정으로 배포 바이너리에 VC++ 재배포 패키지 불필요.
 
-Windows 대상 타입 검사만 통과. 두 대상의 릴리스 빌드와 ZIP 생성, Windows에서의 실행과 PowerShell 설치는 미검증.
+GitHub Actions의 `windows-2025`에서 x64, `windows-11-arm`에서 ARM64 릴리스 빌드와 ZIP 생성, `sshtui.exe --version` 실행 확인. `install.ps1`은 ASCII 검사와 PowerShell 구문 분석 통과. 실제 스크립트 실행과 `PATH` 갱신, TUI 대화형 실행, 네이티브 파일 다이얼로그는 미검증.
 
 ### Debian과 Ubuntu (.deb)
 
-`amd64`, `arm64`, `armhf` 패키지 생성 확인(macOS). 실제 설치는 미검증. `armhf`에는 ARMv6 바이너리 포함. 설치 명령은 [Linux 패키지](#linux-패키지-deb--rpm) 참고.
+GitHub Actions에서 `amd64`, `arm64`, `armhf` 패키지 생성 확인. `armhf`에는 ARMv6 바이너리 포함. `releases/latest/download/sshtui_amd64.deb`의 HTTP 200 응답 확인. 실제 패키지 설치는 미검증. 설치 명령은 [Linux 패키지](#linux-패키지-deb--rpm) 참고.
 
 ### Fedora와 RHEL 계열 (.rpm)
 
-`x86_64`, `aarch64` 패키지 생성 확인(macOS). 실제 설치는 미검증. 설치 명령은 [Linux 패키지](#linux-패키지-deb--rpm) 참고.
+GitHub Actions에서 `x86_64`, `aarch64` 패키지 생성 확인. 실제 패키지 설치는 미검증. 설치 명령은 [Linux 패키지](#linux-패키지-deb--rpm) 참고.
 
 ### Raspberry Pi
 
-표의 대상명은 `.tar.gz` 자산의 triple. ARM용 빌드와 CPU 속성만 확인했으며 Raspberry Pi 실기기 실행과 패키지 설치는 미검증.
+표의 대상명은 `.tar.gz` 자산의 triple. GitHub Actions에서 ARM용 빌드와 정적 링크, ARMv7과 ARMv6의 CPU 속성 확인. Raspberry Pi 실기기 실행과 패키지 설치는 미검증.
 
 | 모델 | SoC | CPU | 64비트 OS 자산 | 32비트 OS 자산 |
 |---|---|---|---|---|
@@ -912,7 +912,7 @@ Windows 대상 타입 검사만 통과. 두 대상의 릴리스 빌드와 ZIP �
 
 ### 지원하는 셸
 
-설치 열은 스크립트를 호출하는 셸 기준. macOS의 임시 환경에서 `sh`와 `dash`로 설치를 확인했으며, 나머지 호출 셸과 Windows 설치 스크립트 실행은 미검증. 히스토리 열은 [기본 후보 파일](#셸-히스토리-가져오기) 기준이며 실제 사용자 파일은 미검증.
+설치 명령 열은 스크립트를 호출하는 셸 기준. macOS의 임시 `HOME`에서 게시된 릴리스의 `curl … | sh` 설치 확인. 로컬 자산 설치는 macOS에서 `sh`와 `dash`, Linux CI 러너에서 `sh`로 확인. GitHub Actions에서 `shellcheck`, `sh -n`, `dash -n`과 `install.ps1`의 ASCII 검사 및 PowerShell 구문 분석 통과. 나머지 호출 셸과 Windows 설치 스크립트 실행은 미검증. 히스토리 열은 [기본 후보 파일](#셸-히스토리-가져오기) 기준이며 실제 사용자 파일은 미검증.
 
 | 셸 | 설치 명령 | 히스토리 후보 |
 |---|---|---|
@@ -934,17 +934,25 @@ Windows 대상 타입 검사만 통과. 두 대상의 릴리스 빌드와 ZIP �
 
 ### 검증 결과
 
+GitHub Actions와 게시된 릴리스 확인 기록의 기준일은 2026-11-24(`v0.1.0`).
+
 | 구분 | 항목 | 상태 |
 |---|---|---|
-| 자동 | 단위 테스트 555개(`cargo test --offline`, 라이브러리 548개와 실행 파일 7개). config, 입력 검증, SSH 인자와 실행, 키 판별과 설치, 화면 상태와 렌더링, 마우스 클릭 영역, 업데이트, 호스트 키 삭제, 마지막 접속 기록, 셸 히스토리 해석과 후보 파일 순서, 표시 언어 | 통과 (macOS) |
+| 자동 | 단위 테스트 557개(`cargo test --offline`, 라이브러리 550개와 실행 파일 7개). config, 입력 검증, SSH 인자와 실행, 키 판별과 설치, 화면 상태와 렌더링, 마우스 클릭 영역, 업데이트, 호스트 키 삭제, 마지막 접속 기록, 셸 히스토리 해석과 후보 파일 순서, 표시 언어 | 통과 (macOS) |
 | 자동 | `cargo fmt --check`, `cargo clippy --offline --all-targets -- -D warnings` | 통과 |
 | 자동 | `cargo check --target x86_64-pc-windows-msvc`, `--target x86_64-unknown-linux-gnu` | 통과 (타입 검사만) |
+| 자동 | `ci.yml`의 `check`(커밋 `361fd24`, Rust 1.100.0). `ubuntu-latest`, `macos-latest`, `windows-latest`에서 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` | 통과 (GitHub Actions) |
+| 자동 | `ci.yml`의 `scripts`. `shellcheck install.sh scripts/*.sh`, `sh -n install.sh`, `dash -n install.sh`, `install.ps1`의 ASCII 검사와 PowerShell 구문 분석 | 통과 (GitHub Actions) |
+| 자동 | `ci.yml`의 `package`. `cargo zigbuild`로 `x86_64-unknown-linux-musl`과 `aarch64-unknown-linux-musl` 빌드 및 패키징, 자산 이름 확인. x86_64 Linux 러너에서 `file://` 기준 URL로 `install.sh` 실행 및 `--version` 확인 | 통과 (GitHub Actions) |
+| 자동 | `release.yml` 수동 실행. `linux`에서 4개 대상 빌드, `readelf` 정적 링크 검사, ARMv7과 ARMv6의 `Tag_CPU_arch` v7과 v6 확인, x86_64의 `--version` 및 deb와 rpm 패키징. `macos`에서 2개 대상 빌드와 `minos` 11.0 검사, arm64 `codesign -v`와 `--version` 실행. `windows`에서 x64와 ARM64를 각각 `windows-2025`와 `windows-11-arm`에서 빌드하고 해당 러너에서 `sshtui.exe --version` 실행. `publish`에서 자산 21개 목록과 `SHA256SUMS` 검증, 빌드 출처 증명 생성, 초안 업로드 후 공개 | 통과 (GitHub Actions) |
+| 수동 | 게시된 릴리스 확인. Apple Silicon에서 자산 21개 다운로드 및 `SHA256SUMS` 20개 항목 검증. tar.gz 6개의 내용물(실행 파일, `README.md`, `LICENSE`)과 바이너리 형식, zip 2개의 내용물(`sshtui.exe`, `README.md`, `LICENSE`) 확인. Linux 바이너리 4개의 정적 링크, macOS 바이너리 2개의 `minos` 11.0 및 arm64의 `codesign -v` 확인. macOS arm64는 직접, x86_64는 Rosetta에서 `--version` 실행. `gh attestation verify -R hungryZoo/sshtui <tar.gz>` 종료 코드 0. 임시 `HOME`에서 `curl -fsSL https://raw.githubusercontent.com/hungryZoo/sshtui/main/install.sh \| sh`로 최신 버전 조회, 다운로드, 체크섬 검증, `~/.local/bin` 설치와 `--version` 일치 확인. `releases/latest/download/sshtui_amd64.deb`의 HTTP 200 응답, 로컬 빌드의 `sshtui --check-update` 출력 `sshtui 0.1.0 is up to date (latest release: 0.1.0)` 및 종료 코드 0 확인 | 확인 (macOS) |
+| 수동 | Homebrew 포뮬러 확인. `scripts/post-release.sh`로 `hungryZoo/homebrew-tap`의 `Formula/sshtui.rb` 갱신. 자산 주소 4개의 HTTP 200 응답 및 `sha256`과 릴리스 `SHA256SUMS` 일치 확인. `brew style` 지적 없음, `brew install --dry-run hungryZoo/tap/sshtui` 출력 `Would install 1 formula` 확인 | 확인 (macOS) |
 | 수동 | 임시 ssh 디렉터리에서 목록, 새 접속 저장, 편집, 삭제, 외부 변경 감지, 불일치 알림, 1회 접속의 ssh 실행과 종료 코드 | 확인 (macOS, tmux) |
 | 수동 | 호스트 키 삭제: 임시 SSH 디렉터리에 평문 항목과 `ssh-keygen -H`로 해시한 항목이 섞인 `known_hosts`를 두고 `x` → 확인 화면 → `y`로 삭제. `example.com`은 같은 파일에 `ssh-keygen -R`을 적용한 결과와 바이트 일치, `[10.0.0.5]:2222`는 `ssh-keygen -R`이 함께 지우는 와일드카드 줄(`!example.com,*`) 1개만 차이. 백업 파일 `.known_hosts.sshtui.bak`의 내용과 권한(`0600`) 유지, `HostKeyAlias` 호스트의 이름 계산, 항목 없음 메시지(`No entry for <이름> in <경로>`), `n` 취소, 키 안내 클릭, 필터 입력 중 `x` 입력, 폭 96에서 필터 적용 시 키 안내 | 확인 (macOS, tmux) |
 | 수동 | 마우스 범위는 tmux 창에 SGR 마우스 시퀀스를 입력해 확인한 호스트 줄 클릭과 더블 클릭 접속, 휠, 키 안내, 필터 바, 필드 클릭, 팝업 바깥 클릭, 누른 곳과 다른 곳에서 뗀 경우의 취소, 종료 뒤 남는 입력 없음, `SSHTUI_NO_MOUSE` | 확인 (macOS, tmux) |
 | 수동 | 디자인 목업(docs/design) 6장과의 대조: 목업과 같은 표본 호스트 12개, 100x28 창에서 목록, 필터, 새 접속, 편집 오류, 키 목록, 변경 확인 화면의 배치와 문구, 트루컬러 색 코드(배경, 강조, 삭제 줄 배경 등), COLORTERM 미설정 시 16색 전환 | 확인 (macOS, tmux) |
 | 수동 | 업데이트 확인 범위는 `latest=9.9.9`일 때의 알림과 `Update sshtui` 팝업, 24시간 이내 캐시 유지, 오래된 캐시의 시도 시각 선기록, `SSHTUI_NO_UPDATE_CHECK`, `--check-update` 종료 코드 `11`(릴리스 없음, `curl` 없음), `Update sshtui` 팝업에서 `Enter` 후 터미널 복원과 명령 실행, 실패 시 종료 코드 `1` | 확인 (macOS, tmux, 임시 HOME) |
-| 미검증 | 게시된 릴리스 조회 성공과 새 버전 감지 | 미검증 |
+| 미검증 | 현재 설치 버전보다 새로운 게시 릴리스 감지 | 미검증 |
 | 미검증 | 설치 방식별 업그레이드 명령의 실제 성공(Homebrew, cargo, install.sh, install.ps1, .deb, .rpm) | 미검증 |
 | 미검증 | 네이티브 다이얼로그의 실제 표시와 숨김파일 표시(macOS, Windows, Linux) | 미검증 |
 | 미검증 | 실제 서버 접속 성공(암호, 패스프레이즈, 호스트 키 확인 흐름) | 미검증 |
@@ -963,17 +971,16 @@ Windows 대상 타입 검사만 통과. 두 대상의 릴리스 빌드와 ZIP �
 | 미검증 | 실제 터미널 앱과 글꼴의 한글 2칸 폭 렌더링 | 미검증 |
 | 수동 | 키 안내 버튼: tmux 창(100x28, 한국어)에서 트루컬러 배경 코드로 첫 쌍 전체가 강조색 배경인지, `→`와 `←`로 버튼이 편집, `known_host` 삭제, 종료까지 이동하고 양 끝에서 멈추는지, 편집에 포커스를 두고 `Enter`로 편집 폼이 열리는지, 목록으로 돌아오거나 `↑`를 누르면 포커스가 첫 쌍으로 돌아가는지, 새 접속 줄에 `n`이 없는지 확인 | 확인 (macOS, tmux) |
 | 미검증 | 실제 마우스 장치와 터미널 에뮬레이터(Terminal, iTerm2, Windows Terminal 등)에서의 클릭과 휠, 이동 이벤트 보고와 호버 애니메이션의 체감 품질, 키 안내 호버의 버튼 표현 체감 | 미검증 |
-| 미검증 | Windows와 Linux에서의 실행(링크, 터미널 동작, 종료 코드 전달) | 미검증 |
+| 미검증 | Windows와 Linux의 TUI 대화형 실행 및 실제 접속에서의 종료 코드 전달 | 미검증 |
 | 미검증 | zenity의 `Ctrl+H`, kdialog의 `Alt+.` 단축키 안내 문구의 정확성 | 문서 미확인 |
 | 수동 | 로컬 릴리스 빌드. `scripts/build-all.sh`로 6개 대상 빌드(Rust 1.100.0, zig 0.16.0, cargo-zigbuild 0.24.1). `file`로 Linux 4개 대상의 정적 링크 확인. ARM 속성 섹션의 `Tag_CPU_arch`는 `armv7-unknown-linux-musleabihf`가 v7, `arm-unknown-linux-musleabihf`가 v6. macOS 2개 대상의 `minos`는 11.0. arm64 바이너리의 `codesign -v` 통과 | 확인 (macOS) |
 | 수동 | 로컬 macOS 바이너리 실행. `aarch64-apple-darwin`의 `--version` 직접 실행, `x86_64-apple-darwin`의 `--version`은 Rosetta에서 실행 | 확인 (macOS) |
 | 수동 | 로컬 패키징. `scripts/package-all.sh`로 `dist/`에 19개 자산 생성(tar.gz 6개, deb 3개와 별칭 3개, rpm 2개와 별칭 2개, `install.sh`, `install.ps1`, `SHA256SUMS`). 체크섬 18개 항목 검증 통과. `.deb`의 `control` 필드(`Package`, `Architecture: armhf`, `Depends: openssh-client`)와 파일 배치, `.rpm` 파일 목록 확인 | 확인 (macOS) |
 | 수동 | 로컬 설치 스크립트. `SSHTUI_DOWNLOAD_BASE=file://.../dist`와 임시 `HOME`으로 `dash install.sh`와 `sh install.sh` 실행. 지정한 디렉터리와 기본 `~/.local/bin` 설치, 설치 후 `--version` 일치, zsh의 `export`와 fish의 `fish_add_path` 및 tcsh의 `set path` 안내 확인. 체크섬 불일치 시 종료 코드 1 및 설치 없음. 기준 URL만 주고 버전을 생략하면 오류 | 확인 (macOS) |
 | 수동 | Homebrew 포뮬러. `scripts/update-formula.sh`가 생성한 파일의 Ruby 구문 검사 통과 | 확인 (macOS) |
-| 미검증 | Windows 릴리스 빌드, ZIP 생성, `install.ps1` 실행. 로컬에 PowerShell 없음. `cargo check --target` 타입 검사만 통과 | 미검증 |
-| 미검증 | 실제 Linux에서 바이너리 실행 및 `.deb`와 `.rpm` 설치, Raspberry Pi 실기기 실행 | 미검증 |
-| 미검증 | GitHub Actions의 `ci.yml`, `release.yml` 실행. 로컬 `shellcheck` 부재로 미실행 | 미검증 |
-| 미검증 | 게시된 릴리스로 `curl … \| sh`, `irm … \| iex`, Homebrew 설치, `releases/latest` 경로와 출처 증명 검증 | 미검증 |
+| 미검증 | Windows에서 `install.ps1` 실제 실행과 `PATH` 갱신 | 미검증 |
+| 미검증 | Linux에서 `.deb`와 `.rpm` 실제 설치, ARM 실기기 실행(Raspberry Pi 포함) | 미검증 |
+| 미검증 | 실제 `brew install hungryZoo/tap/sshtui` 실행 | 미검증 |
 
 ### 수동 확인 절차
 
@@ -1257,19 +1264,17 @@ cargo test --offline
 
 ### 릴리스 만드는 방법
 
-1. `Cargo.toml`의 버전과 그 버전에 맞는 `.github/release-notes/v<version>.md` 준비. 노트의 첫 제목은 릴리스 제목으로 사용. 노트 파일이 없으면 GitHub 자동 생성 노트 사용.
-2. macOS에서 로컬 자산을 만들 때는 Rust 대상 툴체인과 Zig, `cargo-zigbuild`, `cargo-deb`, `cargo-generate-rpm` 준비 후 아래 순서로 실행. `scripts/meta.sh`가 `Cargo.toml`에서 이름과 버전을 읽고, `scripts/package-all.sh`가 빌드된 대상만 `dist/`에 패키징.
+1. `Cargo.toml`의 버전과 `.github/release-notes/v<version>.md` 준비. 노트의 첫 최상위 제목을 릴리스 제목으로 사용. 노트 파일이 없으면 GitHub 자동 생성 노트 사용.
+2. `main`에 푸시한 뒤 세 운영체제의 Rust 검사, 설치 스크립트 검사, Linux x86_64와 ARM64 패키징 및 Linux x86_64 설치 검사 통과 확인. [CI 워크플로](.github/workflows/ci.yml)
+3. `main`에서 `release.yml` 수동 실행 또는 `Cargo.toml`의 버전과 일치하는 `v<version>` 태그 푸시. 해당 태그가 없으면 게시 작업에서 빌드한 커밋에 태그 생성. 기존 태그가 `main`의 실행 커밋과 다르면 해당 태그에서 수동 실행해 미게시 릴리스의 빌드 출처 증명과 커밋 일치. [릴리스 워크플로](.github/workflows/release.yml)
+4. Linux, macOS, Windows의 빌드와 검사, 패키징 결과 확인. `publish`에서 자산 21개와 `SHA256SUMS` 검사, 초안 준비, 빌드 출처 증명 생성, 자산 업로드와 목록 대조, 초안 공개 완료 확인.
+5. 게시 후 탭 쓰기 권한이 있는 로컬 `gh` 로그인으로 `scripts/post-release.sh` 실행. 인자 생략 시 `Cargo.toml`의 버전 사용. `HOMEBREW_TAP_TOKEN`이 설정된 경우 게시 워크플로에서 `hungryZoo/homebrew-tap`의 `Formula/sshtui.rb` 자동 갱신. 두 경로 모두 `scripts/update-formula.sh`가 릴리스 `SHA256SUMS`를 사용해 포뮬러 생성.
 
-   ```bash
-   scripts/build-all.sh
-   scripts/package-all.sh
-   ```
+운영 메모
 
-3. 배포 담당자가 `Cargo.toml`의 버전과 같은 `v<version>` 태그를 푸시하면 [릴리스 워크플로](.github/workflows/release.yml) 실행. 필요 시 해당 태그에서 수동 실행으로 재시도.
-4. 워크플로에서 Linux, macOS, Windows 대상 빌드 및 플랫폼별 바이너리 검사, 아카이브와 패키지 생성. 게시 작업에서 모은 자산 목록과 `SHA256SUMS` 확인, 초안 준비, 체크섬 목록으로 빌드 출처 증명 생성, 자산 업로드 및 목록 대조 후 초안 공개.
-5. 게시 후 `HOMEBREW_TAP_TOKEN`이 설정되어 있으면 워크플로에서 `hungryZoo/homebrew-tap`의 `Formula/sshtui.rb` 갱신. 토큰이 없으면 배포 담당자가 탭 쓰기 권한이 있는 로컬 `gh` 로그인으로 `scripts/post-release.sh` 실행. 인자를 생략하면 `Cargo.toml`의 버전 사용. 두 경로 모두 `scripts/update-formula.sh`가 릴리스 `SHA256SUMS`로 포뮬러 생성.
-
-[CI 워크플로](.github/workflows/ci.yml)는 푸시와 풀 리퀘스트에서 세 운영체제의 Rust 검사, 설치 스크립트 구문 검사, Linux x86_64 패키징과 로컬 설치 검사 수행 예정.
+- macOS arm64 호스팅 러너가 15분 안에 배정되지 않아 작업이 취소된 사례(`The job was not acquired by Runner of type hosted even after multiple attempts`). `gh run rerun <run-id> --failed`로 실패한 작업만 재실행하면 앞서 성공한 작업의 결과물 재사용.
+- `cargo-zigbuild`는 0.24.1로 고정. 0.22.3은 Rust 1.100.0의 `aarch64-unknown-linux-musl` 링크에서 `unsupported linker arg: --fix-cortex-a53-843419` 오류 발생.
+- 저장소의 immutable releases 설정 비활성화 상태.
 
 ### 작업 방식
 
