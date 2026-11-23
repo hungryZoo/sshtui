@@ -2,7 +2,7 @@
 
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Environment variable that overrides the ssh directory (default: `~/.ssh`).
 pub const SSH_DIR_ENV: &str = "SSHTUI_SSH_DIR";
@@ -94,22 +94,10 @@ impl SshPaths {
 
     /// Expands a leading tilde path component to the home directory when available.
     pub fn expand_tilde(&self, input: &str) -> PathBuf {
-        let path = Path::new(input);
-        let (Some(home), Ok(rest)) = (self.home(), path.strip_prefix("~")) else {
-            return path.to_path_buf();
-        };
-        if rest.as_os_str().is_empty() {
-            return home.to_path_buf();
-        }
-
-        if !matches!(rest.components().next(), Some(Component::Prefix(_))) {
-            return home.join(rest);
-        }
-
-        // Keep a Windows drive prefix in the suffix from replacing the home path.
-        let mut expanded = home.join("").into_os_string();
-        expanded.push(rest.as_os_str());
-        PathBuf::from(expanded)
+        self.home().map_or_else(
+            || PathBuf::from(input),
+            |home| expand_tilde_from(home, input),
+        )
     }
 
     /// Abbreviates the home prefix component-wise, using `/` in the abbreviated path.
@@ -128,9 +116,54 @@ impl SshPaths {
     }
 }
 
+#[cfg(not(windows))]
+fn expand_tilde_from(home: &Path, input: &str) -> PathBuf {
+    let path = Path::new(input);
+    match path.strip_prefix("~") {
+        Ok(rest) if rest.as_os_str().is_empty() => home.to_path_buf(),
+        Ok(rest) => home.join(rest),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+#[cfg(windows)]
+fn expand_tilde_from(home: &Path, input: &str) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let separators = ['/', '\\'];
+    let Some(rest) = input.strip_prefix('~') else {
+        return PathBuf::from(input);
+    };
+    if !rest.is_empty() && !rest.starts_with(separators) {
+        return PathBuf::from(input);
+    }
+    let rest = rest.trim_start_matches(separators);
+    if rest.is_empty() {
+        return home.to_path_buf();
+    }
+
+    let home_units: Vec<_> = home
+        .as_os_str()
+        .encode_wide()
+        .map(|unit| {
+            if unit == u16::from(b'/') {
+                u16::from(b'\\')
+            } else {
+                unit
+            }
+        })
+        .collect();
+    let home = PathBuf::from(OsString::from_wide(&home_units));
+    // Append the suffix without treating it as a drive path or resolving dot components.
+    let mut expanded = home.join("").into_os_string();
+    expanded.push(rest.replace('/', "\\"));
+    PathBuf::from(expanded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[cfg(windows)]
     const ROOT: &str = "C:/";
@@ -223,6 +256,44 @@ mod tests {
         for input in ["~user/x", "/abs", "rel/~/x", ""] {
             assert_eq!(paths.expand_tilde(input), Path::new(input), "{input:?}");
         }
+    }
+
+    #[test]
+    fn expands_tilde_with_native_separators() {
+        let home = tempdir().unwrap();
+        let paths = SshPaths::resolve(None, Some(home.path()), home.path()).unwrap();
+        assert_eq!(
+            paths.expand_tilde("~/a/b").as_os_str(),
+            home.path().join("a").join("b").as_os_str()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expands_mixed_separators_and_keeps_dot_components() {
+        let home = tempdir().unwrap();
+        let paths = SshPaths::resolve(None, Some(home.path()), home.path()).unwrap();
+        for (input, suffix) in [
+            (r"~\a\b", r"a\b"),
+            (r"~/a\b", r"a\b"),
+            ("~/a/../b", r"a\..\b"),
+            ("~/a/./b/.", r"a\.\b\."),
+        ] {
+            let mut expected = home.path().join("").into_os_string();
+            expected.push(suffix);
+            assert_eq!(paths.expand_tilde(input).into_os_string(), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keeps_backslashes_in_expanded_paths() {
+        let home = tempdir().unwrap();
+        let paths = SshPaths::resolve(None, Some(home.path()), home.path()).unwrap();
+        assert_eq!(
+            paths.expand_tilde(r"~/a\b").as_os_str(),
+            home.path().join(r"a\b").as_os_str()
+        );
     }
 
     #[cfg(windows)]
