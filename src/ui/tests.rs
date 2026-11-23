@@ -35,6 +35,7 @@ pub(crate) struct FakeBackend {
     hidden_hint: Option<String>,
     load_error: Option<String>,
     update_plan: Option<UpdatePlan>,
+    history_commands: Vec<String>,
 }
 
 impl FakeBackend {
@@ -71,6 +72,7 @@ impl FakeBackend {
             hidden_hint: None,
             load_error: None,
             update_plan: None,
+            history_commands: Vec::new(),
         }
     }
 
@@ -108,6 +110,10 @@ impl Backend for FakeBackend {
             return Err(error.clone());
         }
         config::load(&self.paths).map_err(|error| error.to_string())
+    }
+
+    fn recent_ssh_commands(&self) -> Vec<String> {
+        self.history_commands.clone()
     }
 
     fn effective(&self, _: &str) -> Result<EffectiveConfig, String> {
@@ -1885,6 +1891,183 @@ fn update_notice_hit_requires_a_plan_and_room_in_the_header() {
     let app = App::new(FakeBackend::new(HOSTS));
     let (_, hits) = draw_with_hits(&app, 100, 28);
     assert!((0..100).all(|column| hits.hit(column, 1).is_none()));
+}
+
+#[test]
+fn history_header_shows_accented_clickable_singular_and_plural_notices() {
+    for (commands, notice) in [
+        (&["ssh first.example"][..], "1 suggestion i"),
+        (
+            &["ssh first.example", "ssh second.example"][..],
+            "2 suggestions i",
+        ),
+    ] {
+        let mut backend = FakeBackend::new(HOSTS);
+        backend.history_commands = commands
+            .iter()
+            .map(|command| (*command).to_owned())
+            .collect();
+        let app = App::new(backend);
+        let (view, hits) = draw_with_hits(&app, 100, 28);
+        assert!(screen(&view)[1].ends_with(notice));
+        assert_text_hit(
+            &view,
+            &hits,
+            notice,
+            Some(ClickTarget::Key(KeyCode::Char('i'))),
+        );
+        let key = &view.buffer()[(97, 1)];
+        assert_eq!(key.fg, ACCENT);
+        assert!(key.modifier.contains(Modifier::BOLD));
+    }
+}
+
+#[test]
+fn history_header_precedes_update_and_is_hidden_first_when_space_runs_out() {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.history_commands = vec!["ssh first.example".into(), "ssh second.example".into()];
+    backend.update_plan = Some(UpdatePlan {
+        current: "1.0.0".into(),
+        latest: "2.0.0".into(),
+        method: InstallMethod::Brew,
+    });
+    let mut app = App::new(backend);
+    let notices = "2 suggestions i   update available u";
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    assert!(screen(&view)[1].ends_with(notices));
+    assert_text_hit(
+        &view,
+        &hits,
+        "2 suggestions i",
+        Some(ClickTarget::Key(KeyCode::Char('i'))),
+    );
+    assert_text_hit(
+        &view,
+        &hits,
+        "update available u",
+        Some(ClickTarget::UpdateNotice),
+    );
+
+    let (view, hits) = draw_with_hits(&app, 45, 12);
+    assert!(!screen(&view)[0].contains("suggestion"));
+    assert_text_hit(
+        &view,
+        &hits,
+        "update available u",
+        Some(ClickTarget::UpdateNotice),
+    );
+    assert!(
+        (0..45).all(|column| hits.hit(column, 0) != Some(&ClickTarget::Key(KeyCode::Char('i'))))
+    );
+
+    press(&mut app, KeyCode::Char('i'));
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    assert!(screen(&view)[1].ends_with(notices));
+    assert_eq!(view.buffer()[(97, 1)].fg, MUTED);
+    assert_text_hit(&view, &hits, "2 suggestions i", Some(ClickTarget::Outside));
+}
+
+#[test]
+fn history_popup_shows_extracted_fields_and_click_targets() {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.history_commands = [
+        "ssh ops@new.example -ignored-remote-arg",
+        "ssh plain.example",
+        "ssh -p 2222 ops@new.example",
+        "ssh -p 2222 -i '~/.ssh/work key' ops@new.example remote-command-marker",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let mut app = App::new(backend);
+    press(&mut app, KeyCode::Char('i'));
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    let lines = screen(&view);
+    let title = lines
+        .iter()
+        .find(|line| line.contains("Import from shell history"))
+        .unwrap();
+    assert!(title.contains("3 found"));
+    let selected_row = lines
+        .iter()
+        .position(|line| line.contains("› ops@new.example:2222"))
+        .unwrap();
+    let selected = &lines[selected_row];
+    assert!(selected.contains("ops@new.example:2222  ~/.ssh/work key"));
+    assert!(selected.ends_with("×2  │"));
+    let key_column = selected.find("~/.ssh/work key").unwrap();
+    let count_column = selected.find('×').unwrap();
+    for column in [key_column, count_column] {
+        let x = selected[..column].width() as u16;
+        assert_eq!(view.buffer()[(x, selected_row as u16)].fg, MUTED);
+    }
+    assert_eq!(lines[26], "   enter  fill form   ↑↓ select   esc close");
+    contains(
+        &view,
+        &["Pick one to open the new connection form with these values."],
+    );
+    assert!(!lines.join("\n").contains("remote-command-marker"));
+    for (text, index) in [
+        ("› ops@new.example:2222", 0),
+        ("plain.example", 1),
+        ("×2", 0),
+    ] {
+        let target = ClickTarget::SuggestionRow(index);
+        assert_text_hit(&view, &hits, text, Some(target.clone()));
+        assert_eq!(target.hover_key(), Some(HoverKey::SuggestionRow(index)));
+    }
+    let hovered = fully_hovered(&app, HoverKey::SuggestionRow(0));
+    let x = selected[..selected.find('›').unwrap()].width() as u16;
+    assert_eq!(
+        hovered.buffer()[(x, selected_row as u16)].bg,
+        HOVER_SELECTED
+    );
+    assert_eq!(hits.hit(0, 0), Some(&ClickTarget::Outside));
+}
+
+#[test]
+fn history_popup_scrolls_ten_rows_with_the_selection_in_view() {
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.history_commands = (0..12)
+        .map(|index| format!("ssh history-{index:02}.example"))
+        .collect();
+    let mut app = App::new(backend);
+    press(&mut app, KeyCode::Char('i'));
+    for (selection, first_row) in [(0, 0), (11, 2)] {
+        if selection > 0 {
+            for _ in 0..selection {
+                press(&mut app, KeyCode::Down);
+            }
+        }
+        let (view, hits) = draw_with_hits(&app, 100, 28);
+        let visible_rows: Vec<_> = hits
+            .regions
+            .iter()
+            .filter_map(|(_, target)| match *target {
+                ClickTarget::SuggestionRow(index) => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            visible_rows,
+            (first_row..first_row + 10).collect::<Vec<_>>()
+        );
+        contains(
+            &view,
+            &[
+                "12 found",
+                &format!("› history-{:02}.example", 11 - selection),
+            ],
+        );
+        for index in visible_rows {
+            assert_text_hit(
+                &view,
+                &hits,
+                &format!("history-{:02}.example", 11 - index),
+                Some(ClickTarget::SuggestionRow(index)),
+            );
+        }
+    }
 }
 
 #[test]

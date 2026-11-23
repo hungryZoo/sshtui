@@ -8,7 +8,7 @@ use sshtui::ssh::exec::{find_ssh, run_interactive};
 use sshtui::system::SystemBackend;
 use sshtui::ui::ColorMode;
 use sshtui::update::{self, CURRENT_VERSION, CheckOutcome, InstallMethod, UpdatePlan};
-use sshtui::{dialog, state, tui};
+use sshtui::{dialog, history, state, tui};
 
 const NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -64,6 +64,14 @@ fn main() -> std::process::ExitCode {
             println!("  SSHTUI_SSH_DIR  Override the SSH directory (default: ~/.ssh)");
             println!(
                 "  SSHTUI_NO_MOUSE  Disable mouse support (keeps the terminal's own text selection)"
+            );
+            println!(
+                "  {}  Disable shell history import when nonempty and not 0",
+                history::DISABLE_ENV
+            );
+            println!(
+                "  {}  Use one history file instead of the default shell history files",
+                history::HISTORY_FILE_ENV
             );
             println!(
                 "  {}  Disable automatic update checks and notices when nonempty and not 0",
@@ -141,9 +149,15 @@ fn run() -> anyhow::Result<ExitCode> {
 
     let plan = update::plan();
     update::maybe_spawn_check();
+    let history_sources = history::history_sources(
+        dirs::home_dir().as_deref(),
+        dirs::config_dir().as_deref(),
+        &|name| std::env::var_os(name),
+    );
     let backend = SystemBackend::new(paths, ssh.clone(), dialog::system_picker())
         .with_update_plan(plan)
-        .with_state_file(state::default_state_file());
+        .with_state_file(state::default_state_file())
+        .with_history_sources(history_sources);
     let options = tui::Options {
         mouse: mouse_enabled(std::env::var_os("SSHTUI_NO_MOUSE").as_deref()),
         color: color_mode(std::env::var_os("COLORTERM").as_deref()),

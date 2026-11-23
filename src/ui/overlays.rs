@@ -6,9 +6,11 @@ use ratatui::widgets::{Block, BorderType, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    ClickTarget, ConfirmChoice, ConfirmKind, ConfirmState, KeyPickerState, NoticeState, UpdateState,
+    ClickTarget, ConfirmChoice, ConfirmKind, ConfirmState, ImportState, KeyPickerState,
+    NoticeState, UpdateState,
 };
 use crate::config::{DiffHunk, DiffLine, DiffTag, backup_file_name};
+use crate::history::Suggestion;
 use crate::paths::SshPaths;
 
 use super::layout::{
@@ -20,6 +22,8 @@ use super::{
     HitMap, HoverFrame, HoverKey, KeyHint, Theme, command_lines, intensity, labeled_lines,
     styled_wrapped,
 };
+
+const POPUP_WIDTH: u16 = 60;
 
 pub(super) fn confirm_help(state: &ConfirmState) -> &'static [KeyHint] {
     const CANCEL_DELETE: &[KeyHint] = &destructive_help("cancel", "delete");
@@ -230,7 +234,14 @@ pub(super) fn key_picker(
     } else {
         format!("{count} keys in {directory}")
     };
-    let area = popup(frame, body, count.saturating_add(2), theme, hits);
+    let area = popup(
+        frame,
+        body,
+        POPUP_WIDTH,
+        count.saturating_add(2),
+        theme,
+        hits,
+    );
     popup_heading(frame, area, "Select a key file", &count_text, theme);
     let selection = state.selection();
     for (index, rect) in visible_rows(below(area, 2), count, Some(selection)) {
@@ -285,6 +296,98 @@ pub(super) fn key_picker(
     ]
 }
 
+pub(super) fn import(
+    frame: &mut Frame,
+    state: &ImportState,
+    suggestions: &[Suggestion],
+    body: Rect,
+    theme: &Theme,
+    hits: &mut HitMap,
+    hover: HoverFrame<'_>,
+) -> &'static [KeyHint] {
+    const GUIDANCE: &str = "Pick one to open the new connection form with these values.";
+    const MAX_ROWS: usize = 10;
+
+    let count = suggestions.len();
+    let area = popup(
+        frame,
+        body,
+        GUIDANCE.len() as u16 + 6,
+        count.min(MAX_ROWS) + 3,
+        theme,
+        hits,
+    );
+    popup_heading(
+        frame,
+        area,
+        "Import from shell history",
+        &format!("{count} found"),
+        theme,
+    );
+    let mut rows = below(area, 2);
+    rows.height = rows.height.saturating_sub(1);
+    let selection = state.selection();
+    for (index, rect) in visible_rows(rows, count, Some(selection)) {
+        let suggestion = &suggestions[index];
+        let invocation = &suggestion.invocation;
+        let selected = index == selection;
+        let t = intensity(hover, HoverKey::SuggestionRow(index));
+        frame
+            .buffer_mut()
+            .set_style(rect, theme.hover_row(selected, t));
+        if selected {
+            put(
+                frame,
+                left(rect, 1),
+                "›",
+                theme.selected(bold(theme.accent), true),
+            );
+        }
+
+        let mut destination = match &invocation.user {
+            Some(user) => format!("{user}@{}", invocation.address),
+            None => invocation.address.clone(),
+        };
+        if let Some(port) = &invocation.port {
+            destination.push(':');
+            destination.push_str(port);
+        }
+        let content = right_of(rect, 2);
+        let occurrences = format!("×{}", suggestion.count);
+        let count_offset = content.width.saturating_sub(occurrences.width() as u16);
+        let destination_area = left(content, count_offset.saturating_sub(2));
+        let style = if selected {
+            bold(theme.text)
+        } else {
+            theme.text
+        };
+        put(
+            frame,
+            destination_area,
+            &destination,
+            theme.hover_text(theme.selected(style, selected), t),
+        );
+        let muted = theme.selected(theme.muted, selected);
+        if let Some(key_file) = &invocation.key_file {
+            let offset = u16::try_from(destination.width()).unwrap_or(u16::MAX);
+            put(
+                frame,
+                right_of(destination_area, offset.saturating_add(2)),
+                key_file,
+                muted,
+            );
+        }
+        put_right(frame, right_of(content, count_offset), &occurrences, muted);
+        hits.add(rect, ClickTarget::SuggestionRow(index));
+    }
+    put(frame, row(area, 2 + rows.height), GUIDANCE, theme.muted);
+    &[
+        ("enter", "fill form", Some(KeyCode::Enter)),
+        ("↑↓", "select", None),
+        ("esc", "close", Some(KeyCode::Esc)),
+    ]
+}
+
 pub(super) fn notice(
     frame: &mut Frame,
     state: &NoticeState,
@@ -294,7 +397,14 @@ pub(super) fn notice(
 ) -> &'static [KeyHint] {
     let width = popup_content_width(body);
     let lines = styled_wrapped(&state.lines().join("\n"), width, body.height, theme.warn);
-    let area = popup(frame, body, lines.len().saturating_add(2), theme, hits);
+    let area = popup(
+        frame,
+        body,
+        POPUP_WIDTH,
+        lines.len().saturating_add(2),
+        theme,
+        hits,
+    );
     popup_heading(frame, area, state.title(), "", theme);
     render_lines(frame, below(area, 2), lines);
     if state.connects() {
@@ -361,7 +471,14 @@ pub(super) fn update(
             theme,
         ));
     }
-    let area = popup(frame, body, lines.len().saturating_add(2), theme, hits);
+    let area = popup(
+        frame,
+        body,
+        POPUP_WIDTH,
+        lines.len().saturating_add(2),
+        theme,
+        hits,
+    );
     let versions = format!("{} → {}", state.current(), state.latest());
     popup_heading(frame, area, "Update sshtui", &versions, theme);
     render_lines(frame, below(area, 2), lines);
@@ -375,21 +492,28 @@ pub(super) fn update(
     }
 }
 
-fn popup_width(body: Rect) -> u16 {
-    if body.width >= 60 {
-        60
+fn popup_width(body: Rect, preferred_width: u16) -> u16 {
+    if body.width >= preferred_width {
+        preferred_width
     } else {
         body.width.saturating_sub(4)
     }
 }
 
 fn popup_content_width(body: Rect) -> u16 {
-    let width = popup_width(body);
+    let width = popup_width(body, POPUP_WIDTH);
     width.saturating_sub(if width >= 7 { 6 } else { 2 })
 }
 
-fn popup(frame: &mut Frame, body: Rect, rows: usize, theme: &Theme, hits: &mut HitMap) -> Rect {
-    let width = popup_width(body);
+fn popup(
+    frame: &mut Frame,
+    body: Rect,
+    preferred_width: u16,
+    rows: usize,
+    theme: &Theme,
+    hits: &mut HitMap,
+) -> Rect {
+    let width = popup_width(body, preferred_width);
     let height = u16::try_from(rows.saturating_add(2))
         .unwrap_or(u16::MAX)
         .min(body.height);

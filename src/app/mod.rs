@@ -3,6 +3,7 @@
 mod backend;
 mod confirm;
 mod form;
+mod import;
 mod input;
 mod list;
 mod update;
@@ -16,6 +17,7 @@ use crate::config::{
     ConfigSet, HostEntry, WriteError, WriteOutcome, block_fields, plan_add, plan_delete, plan_edit,
 };
 use crate::dialog::PickOutcome;
+use crate::history::Suggestion;
 use crate::known_hosts;
 use crate::ssh::args::{ArgsError, ConnectTarget, config_file_args, connect_args, preview};
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig, find_mismatches};
@@ -26,6 +28,7 @@ use crate::validate::ValidationError;
 pub use self::backend::Backend;
 pub use self::confirm::{ConfirmChoice, ConfirmKind, ConfirmState, KeyPickerState, NoticeState};
 pub use self::form::{FormField, FormKind, FormState};
+pub use self::import::ImportState;
 pub use self::input::TextInput;
 pub use self::list::HostRow;
 pub use self::update::UpdateState;
@@ -84,6 +87,8 @@ pub enum ClickTarget {
     },
     /// Row index in the form key list or key picker.
     KeyRow(usize),
+    /// Row index in the shell history suggestions.
+    SuggestionRow(usize),
     /// A button or hint that acts like an unmodified key press.
     Key(KeyCode),
     /// The update notice in the header.
@@ -117,6 +122,8 @@ pub enum Mode {
     List,
     Form(FormState),
     KeyPicker(KeyPickerState),
+    /// Selects a connection to import from shell history.
+    Import(ImportState),
     Confirm(ConfirmState),
     Notice(NoticeState),
     Update(UpdateState),
@@ -126,6 +133,8 @@ pub enum Mode {
 pub struct App<B: Backend> {
     backend: B,
     config: ConfigSet,
+    history_commands: Vec<String>,
+    suggestions: Vec<Suggestion>,
     list: ListState,
     mode: Mode,
     status: Option<Status>,
@@ -137,12 +146,14 @@ pub struct App<B: Backend> {
 
 impl<B: Backend> App<B> {
     /// Loads the configuration and selects the last connected host when available.
-    /// With no hosts the app starts on the new-connection form.
+    /// With no hosts or history suggestions the app starts on the new-connection form.
     pub fn new(backend: B) -> Self {
         let mut app = Self {
             update_plan: backend.update_plan(),
+            history_commands: backend.recent_ssh_commands(),
             backend,
             config: ConfigSet::default(),
+            suggestions: Vec::new(),
             list: ListState::default(),
             mode: Mode::List,
             status: None,
@@ -153,7 +164,7 @@ impl<B: Backend> App<B> {
         app.load_config();
         let last_host = app.backend.last_host();
         app.reload_list(last_host.as_deref());
-        if app.config.hosts.is_empty() {
+        if app.config.hosts.is_empty() && app.suggestions.is_empty() {
             app.mode = app.new_form();
         }
         app
@@ -178,6 +189,7 @@ impl<B: Backend> App<B> {
             Mode::List => self.handle_list_key(key),
             Mode::Form(form) => self.handle_form_key(form, key),
             Mode::KeyPicker(picker) => self.handle_picker_key(picker, key),
+            Mode::Import(import) => self.handle_import_key(import, key),
             Mode::Confirm(confirm) => self.handle_confirm_key(confirm, key),
             Mode::Notice(notice) => self.handle_notice_key(notice, key),
             Mode::Update(update) => self.handle_update_key(update, key),
@@ -228,9 +240,16 @@ impl<B: Backend> App<B> {
                 picker.select(index);
                 KeyCode::Enter
             }
-            (Mode::KeyPicker(_) | Mode::Notice(_) | Mode::Update(_), ClickTarget::Outside) => {
-                KeyCode::Esc
+            (Mode::Import(import), ClickTarget::SuggestionRow(index))
+                if index < self.suggestions.len() =>
+            {
+                import.selection = index;
+                KeyCode::Enter
             }
+            (
+                Mode::KeyPicker(_) | Mode::Import(_) | Mode::Notice(_) | Mode::Update(_),
+                ClickTarget::Outside,
+            ) => KeyCode::Esc,
             _ => return,
         };
         self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
@@ -240,7 +259,7 @@ impl<B: Backend> App<B> {
     pub fn handle_scroll(&mut self, down: bool) {
         if matches!(
             self.mode,
-            Mode::List | Mode::Confirm(_) | Mode::KeyPicker(_)
+            Mode::List | Mode::Confirm(_) | Mode::KeyPicker(_) | Mode::Import(_)
         ) {
             let code = if down { KeyCode::Down } else { KeyCode::Up };
             self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
@@ -349,6 +368,11 @@ impl<B: Backend> App<B> {
     /// Returns the cached update plan for this session.
     pub fn update_plan(&self) -> Option<&UpdatePlan> {
         self.update_plan.as_ref()
+    }
+
+    /// Returns the unsaved shell history destinations, newest first.
+    pub fn suggestions(&self) -> &[Suggestion] {
+        &self.suggestions
     }
 
     /// Returns the backend used by this application.
@@ -485,6 +509,7 @@ impl<B: Backend> App<B> {
                 ConfigSet::default()
             }
         };
+        self.suggestions = import::suggestions(&self.history_commands, &self.config);
     }
 
     fn reload_list(&mut self, preferred: Option<&str>) {
@@ -577,6 +602,16 @@ impl<B: Backend> App<B> {
                 self.list.clear_filter(&self.config);
             }
             KeyCode::Esc | KeyCode::Char('q') => self.exit = Some(Exit::Quit),
+            KeyCode::Char('i') => {
+                if self.suggestions.is_empty() {
+                    self.set_status(
+                        StatusLevel::Info,
+                        "No new ssh destinations in shell history",
+                    );
+                    return Mode::List;
+                }
+                return Mode::Import(ImportState::default());
+            }
             KeyCode::Char('u') => {
                 return self
                     .update_plan
@@ -727,7 +762,7 @@ impl<B: Backend> App<B> {
                 }
                 KeyCode::Enter => return self.submit(form),
                 KeyCode::Esc => {
-                    if self.config.hosts.is_empty() {
+                    if self.config.hosts.is_empty() && !form.is_from_history() {
                         self.exit = Some(Exit::Quit);
                         return Mode::Form(form);
                     }
@@ -1052,6 +1087,31 @@ impl<B: Backend> App<B> {
             }
         }
         Mode::KeyPicker(picker)
+    }
+
+    fn handle_import_key(&self, mut import: ImportState, key: KeyEvent) -> Mode {
+        if is_plain(key) {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    import.selection = import.selection.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    import.selection =
+                        (import.selection + 1).min(self.suggestions.len().saturating_sub(1));
+                }
+                KeyCode::Enter => {
+                    if let Some(suggestion) = self.suggestions.get(import.selection()) {
+                        return Mode::Form(
+                            FormState::from_history(&suggestion.invocation)
+                                .with_keys(self.backend.discover_keys()),
+                        );
+                    }
+                }
+                KeyCode::Esc => return Mode::List,
+                _ => {}
+            }
+        }
+        Mode::Import(import)
     }
 
     fn handle_notice_key(&mut self, notice: NoticeState, key: KeyEvent) -> Mode {

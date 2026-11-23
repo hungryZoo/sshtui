@@ -69,6 +69,8 @@ pub(super) fn header<B: Backend>(
         format!("{total} hosts")
     };
     let line = headline(title, theme.muted, theme);
+    let min_offset = line.width() + 2;
+    let mut end = area.width;
     if app.update_plan().is_some() {
         let t = intensity(hover, HoverKey::UpdateNotice);
         let notice = Line::from(vec![
@@ -78,10 +80,33 @@ pub(super) fn header<B: Backend>(
         .style(theme.hover_text(theme.hover_background(PLAIN, ROW, t), t));
         let width = notice.width() as u16;
         let offset = area.width.saturating_sub(width);
-        if usize::from(offset) >= line.width() + 2 {
+        if usize::from(offset) >= min_offset {
             let notice_area = right_of(area, offset);
             frame.render_widget(notice, notice_area);
             hits.add(notice_area, ClickTarget::UpdateNotice);
+        }
+        end = offset.saturating_sub(3);
+    }
+    let count = app.suggestions().len();
+    if count > 0 {
+        let label = if count == 1 {
+            "1 suggestion ".into()
+        } else {
+            format!("{count} suggestions ")
+        };
+        let key = KeyCode::Char('i');
+        let t = intensity(hover, HoverKey::Key(key));
+        let notice = Line::from(vec![
+            Span::styled(label, theme.accent),
+            Span::styled("i", bold(theme.accent)),
+        ])
+        .style(theme.hover_text(theme.hover_background(PLAIN, ROW, t), t));
+        let width = notice.width() as u16;
+        let offset = end.saturating_sub(width);
+        if usize::from(offset) >= min_offset {
+            let notice_area = left(right_of(area, offset), width);
+            frame.render_widget(notice, notice_area);
+            hits.add(notice_area, ClickTarget::Key(key));
         }
     }
     frame.render_widget(line, area);

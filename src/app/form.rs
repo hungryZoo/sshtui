@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::config::{
     BlockFields, Change, FieldState, HostEntry, NewHost, OptionChanges, OptionKey,
 };
+use crate::history::SshInvocation;
 use crate::keys::KeyInfo;
 use crate::paths::SshPaths;
 use crate::ssh::args::ConnectTarget;
@@ -80,6 +81,7 @@ pub struct FormState {
     kind: FormKind,
     fields: Box<[FormInput; FormField::ALL.len()]>,
     focus: usize,
+    from_history: bool,
     install_key: bool,
     disable_password: bool,
     keys: Vec<KeyInfo>,
@@ -92,11 +94,32 @@ impl FormState {
             kind: FormKind::New,
             fields: Box::default(),
             focus: 0,
+            from_history: false,
             install_key: false,
             disable_password: false,
             keys: Vec::new(),
             key_cursor: None,
         }
+    }
+
+    pub(super) fn from_history(invocation: &SshInvocation) -> Self {
+        let mut form = Self::new();
+        form.from_history = true;
+        for (field, value) in [
+            (FormField::User, invocation.user.as_deref()),
+            (FormField::Address, Some(invocation.address.as_str())),
+            (FormField::Port, invocation.port.as_deref()),
+            (FormField::KeyFile, invocation.key_file.as_deref()),
+        ] {
+            if let Some(value) = value {
+                form.fields[field as usize].text.set(value.to_owned());
+            }
+        }
+        form
+    }
+
+    pub(super) fn is_from_history(&self) -> bool {
+        self.from_history
     }
 
     pub(super) fn edit(

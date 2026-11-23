@@ -19,6 +19,10 @@ pub trait Backend {
     fn config_prefix(&self) -> Vec<OsString>;
     /// Loads the current SSH configuration.
     fn load_config(&self) -> Result<ConfigSet, String>;
+    /// Returns ssh commands from shell history, oldest first. Called once at startup.
+    fn recent_ssh_commands(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Returns the alias that was connected most recently, if recorded.
     fn last_host(&self) -> Option<String> {
         None

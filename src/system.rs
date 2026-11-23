@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::app::Backend;
 use crate::config::{self, ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, FilePicker, PickOutcome};
+use crate::history::{self, HistorySource};
 use crate::keys::{self, KeyInfo};
 use crate::known_hosts::{self, ForgetPlan};
 use crate::paths::SshPaths;
@@ -22,6 +23,7 @@ pub struct SystemBackend {
     picker: Box<dyn FilePicker>,
     update_plan: Option<UpdatePlan>,
     state_file: Option<PathBuf>,
+    history_sources: Vec<HistorySource>,
 }
 
 impl SystemBackend {
@@ -33,6 +35,7 @@ impl SystemBackend {
             picker,
             update_plan: None,
             state_file: None,
+            history_sources: Vec::new(),
         }
     }
 
@@ -45,6 +48,12 @@ impl SystemBackend {
     /// Sets the optional file for remembering the last connected alias.
     pub fn with_state_file(mut self, path: Option<PathBuf>) -> Self {
         self.state_file = path;
+        self
+    }
+
+    /// Sets the shell history files to read at startup.
+    pub fn with_history_sources(mut self, sources: Vec<HistorySource>) -> Self {
+        self.history_sources = sources;
         self
     }
 
@@ -65,6 +74,10 @@ impl Backend for SystemBackend {
 
     fn load_config(&self) -> Result<ConfigSet, String> {
         config::load(&self.paths).map_err(|error| error.to_string())
+    }
+
+    fn recent_ssh_commands(&self) -> Vec<String> {
+        history::read_ssh_commands(&self.history_sources)
     }
 
     fn last_host(&self) -> Option<String> {
@@ -164,6 +177,27 @@ mod tests {
     fn write_config(backend: &SystemBackend, contents: &[u8]) {
         fs::create_dir_all(backend.paths().ssh_dir()).unwrap();
         fs::write(backend.paths().config_file(), contents).unwrap();
+    }
+
+    #[test]
+    fn history_reads_only_ssh_commands_from_the_injected_zsh_file() {
+        let (temp, backend) = fixture();
+        let path = temp.path().join(".zsh_history");
+        fs::write(
+            &path,
+            ": 1:0;ssh first.example\n: 2:0;echo ssh ignored\n: 3:0;ssh-add key\n: 4:0;ssh -p 2222 alice@second.example\n",
+        )
+        .unwrap();
+
+        assert!(backend.recent_ssh_commands().is_empty());
+        let backend = backend.with_history_sources(vec![HistorySource {
+            path,
+            format: history::HistoryFormat::Zsh,
+        }]);
+        assert_eq!(
+            backend.recent_ssh_commands(),
+            ["ssh first.example", "ssh -p 2222 alice@second.example"]
+        );
     }
 
     #[test]

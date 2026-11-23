@@ -58,6 +58,8 @@ struct FakeBackend {
     hidden_hint: Option<String>,
     update_plan: Option<UpdatePlan>,
     update_plan_calls: Cell<usize>,
+    history_commands: Vec<String>,
+    history_reads: Cell<usize>,
 }
 
 impl FakeBackend {
@@ -101,7 +103,17 @@ impl FakeBackend {
             hidden_hint: None,
             update_plan: None,
             update_plan_calls: Cell::new(0),
+            history_commands: Vec::new(),
+            history_reads: Cell::new(0),
         }
+    }
+
+    fn with_history(mut self, commands: &[&str]) -> Self {
+        self.history_commands = commands
+            .iter()
+            .map(|command| (*command).to_owned())
+            .collect();
+        self
     }
 
     fn set_effective(&self, alias: &str, effective: EffectiveConfig) {
@@ -156,6 +168,11 @@ impl Backend for FakeBackend {
     fn load_config(&self) -> Result<ConfigSet, String> {
         self.load_calls.set(self.load_calls.get() + 1);
         self.loaded.borrow().clone()
+    }
+
+    fn recent_ssh_commands(&self) -> Vec<String> {
+        self.history_reads.set(self.history_reads.get() + 1);
+        self.history_commands.clone()
     }
 
     fn last_host(&self) -> Option<String> {
@@ -321,6 +338,166 @@ fn empty_config_starts_in_new_form_and_escape_quits() {
     assert_eq!(app.host_count(), 0);
     key(&mut app, KeyCode::Esc);
     assert_eq!(app.exit(), Some(&Exit::Quit));
+}
+
+fn suggestion_addresses(app: &TestApp) -> Vec<&str> {
+    app.suggestions()
+        .iter()
+        .map(|suggestion| suggestion.invocation.address.as_str())
+        .collect()
+}
+
+fn import_selection(app: &TestApp) -> usize {
+    let Mode::Import(import) = app.mode() else {
+        panic!("expected import popup, got {:?}", app.mode());
+    };
+    import.selection()
+}
+
+#[test]
+fn history_suggestions_exclude_saved_destinations_and_use_cached_commands_on_reload() {
+    let backend = FakeBackend::new(
+        "HostName inherited.example\nHost web\n  hOsTnAmE web.example.com\nHost db\n",
+    )
+    .with_history(&[
+        "ssh first.example",
+        "ssh WEB",
+        "ssh web.example.com",
+        "ssh inherited.example",
+        "ssh latest.example",
+    ]);
+    let mut app = App::new(backend);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(app.backend().history_reads.get(), 1);
+    assert_eq!(
+        suggestion_addresses(&app),
+        ["latest.example", "inherited.example", "first.example"]
+    );
+
+    fs::write(
+        app.backend().paths().config_file(),
+        "Host web\n  HostName latest.example\n",
+    )
+    .unwrap();
+    *app.backend().loaded.borrow_mut() = Ok(load(app.backend().paths()).unwrap());
+    ch(&mut app, 'r');
+    assert_eq!(app.backend().load_calls.get(), 2);
+    assert_eq!(app.backend().history_reads.get(), 1);
+    assert_eq!(
+        suggestion_addresses(&app),
+        ["inherited.example", "web.example.com", "first.example"]
+    );
+}
+
+#[test]
+fn import_key_reports_no_candidates_and_remains_filter_text_while_filtering() {
+    let mut empty = App::new(FakeBackend::new(HOSTS).with_history(&["ssh web"]));
+    ch(&mut empty, 'i');
+    assert!(matches!(empty.mode(), Mode::List));
+    assert_eq!(
+        status(&empty, StatusLevel::Info),
+        "No new ssh destinations in shell history"
+    );
+
+    let mut app = App::new(FakeBackend::new(HOSTS).with_history(&["ssh new.example"]));
+    ch(&mut app, '/');
+    ch(&mut app, 'i');
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.is_filtering());
+    assert_eq!(app.filter().value(), "i");
+    key(&mut app, KeyCode::Enter);
+    ch(&mut app, 'i');
+    assert_eq!(import_selection(&app), 0);
+}
+
+#[test]
+fn import_navigation_clamps_and_enter_prefills_a_new_form() {
+    let backend = FakeBackend::new(HOSTS).with_history(&[
+        "ssh plain.example",
+        "ssh -p 2222 -i '~/.ssh/custom key' alice@new.example",
+    ]);
+    let mut app = App::new(backend);
+    ch(&mut app, 'i');
+    assert_eq!(import_selection(&app), 0);
+    for (code, selection) in [
+        (KeyCode::Up, 0),
+        (KeyCode::Char('j'), 1),
+        (KeyCode::Down, 1),
+        (KeyCode::Char('k'), 0),
+    ] {
+        key(&mut app, code);
+        assert_eq!(import_selection(&app), selection);
+    }
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::List));
+    ch(&mut app, 'i');
+    key(&mut app, KeyCode::Enter);
+    let form = app.form().unwrap();
+    assert!(matches!(form.kind(), FormKind::New));
+    assert_eq!(form.focus(), FormField::Nickname);
+    assert_eq!(value(&app, FormField::Nickname), "");
+    assert_eq!(value(&app, FormField::User), "alice");
+    assert_eq!(value(&app, FormField::Address), "new.example");
+    assert_eq!(value(&app, FormField::Port), "2222");
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/custom key");
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::List));
+}
+
+#[test]
+fn import_is_available_on_first_run_and_supports_wheel_and_clicks() {
+    let mut app = App::new(
+        FakeBackend::new("").with_history(&["ssh plain.example", "ssh -p 2222 alice@new.example"]),
+    );
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.status().is_none());
+    app.handle_click(ClickTarget::Key(KeyCode::Char('i')), false);
+    app.handle_scroll(false);
+    assert_eq!(import_selection(&app), 0);
+    app.handle_scroll(true);
+    app.handle_scroll(true);
+    assert_eq!(import_selection(&app), 1);
+    app.handle_scroll(false);
+    assert_eq!(import_selection(&app), 0);
+    app.handle_click(ClickTarget::Outside, false);
+    assert!(matches!(app.mode(), Mode::List));
+
+    ch(&mut app, 'i');
+    app.handle_click(ClickTarget::SuggestionRow(2), false);
+    assert_eq!(import_selection(&app), 0);
+    app.handle_click(ClickTarget::SuggestionRow(1), false);
+    assert_eq!(app.form().unwrap().focus(), FormField::Nickname);
+    assert_eq!(value(&app, FormField::Address), "plain.example");
+    for field in [
+        FormField::Nickname,
+        FormField::User,
+        FormField::Port,
+        FormField::KeyFile,
+    ] {
+        assert_eq!(value(&app, field), "");
+    }
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(app.exit().is_none());
+}
+
+#[test]
+fn saving_an_imported_address_under_a_new_alias_removes_its_suggestion() {
+    let backend =
+        FakeBackend::new(HOSTS).with_history(&["ssh other.example", "ssh alice@example.com"]);
+    backend.commit_with(CommitBehavior::WriteFile);
+    backend.set_effective("imported", basic_expected());
+    let mut app = App::new(backend);
+    ch(&mut app, 'i');
+    key(&mut app, KeyCode::Enter);
+    app.handle_paste("imported");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["imported".into()])));
+    let saved = fs::read_to_string(app.backend().paths().config_file()).unwrap();
+    assert!(saved.contains("Host imported\n  HostName example.com\n  User alice\n"));
+    assert_eq!(suggestion_addresses(&app), ["other.example"]);
+    assert_eq!(app.backend().history_reads.get(), 1);
 }
 
 #[test]

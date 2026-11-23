@@ -18,6 +18,8 @@ pub enum HoverKey {
     FormField(FormField),
     /// Row index in the form key list or key picker.
     KeyRow(usize),
+    /// Row index in the shell history suggestions.
+    SuggestionRow(usize),
     /// A key hint or another region that dispatches the same key.
     Key(KeyCode),
     /// The update notice in the header.
@@ -32,6 +34,7 @@ impl ClickTarget {
             Self::NewRow => HoverKey::NewRow,
             Self::FormField { field, .. } => HoverKey::FormField(field),
             Self::KeyRow(index) => HoverKey::KeyRow(index),
+            Self::SuggestionRow(index) => HoverKey::SuggestionRow(index),
             Self::Key(code) => HoverKey::Key(code),
             Self::UpdateNotice => HoverKey::UpdateNotice,
             Self::Inert | Self::Outside => return None,

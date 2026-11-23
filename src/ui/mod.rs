@@ -69,7 +69,7 @@ pub fn render<B: Backend>(
     }
     let modal = matches!(
         app.mode(),
-        Mode::KeyPicker(_) | Mode::Notice(_) | Mode::Update(_)
+        Mode::KeyPicker(_) | Mode::Import(_) | Mode::Notice(_) | Mode::Update(_)
     );
     let backdrop = if modal { &theme.dimmed() } else { theme };
     let backdrop_hover = if modal { None } else { hover };
@@ -106,7 +106,7 @@ pub fn render<B: Backend>(
 
     let paths = app.backend().paths();
     let base_help = match app.mode() {
-        Mode::List | Mode::Notice(_) | Mode::Update(_) => {
+        Mode::List | Mode::Import(_) | Mode::Notice(_) | Mode::Update(_) => {
             list::header(frame, app, header, backdrop, &mut hits, backdrop_hover);
             list::render(frame, app, body, backdrop, &mut hits, backdrop_hover);
             list::help(app)
@@ -141,6 +141,18 @@ pub fn render<B: Backend>(
         Mode::KeyPicker(state) => (
             true,
             overlays::key_picker(frame, state, paths, body, theme, &mut hits, hover),
+        ),
+        Mode::Import(state) => (
+            true,
+            overlays::import(
+                frame,
+                state,
+                app.suggestions(),
+                body,
+                theme,
+                &mut hits,
+                hover,
+            ),
         ),
         Mode::Notice(state) => (true, overlays::notice(frame, state, body, theme, &mut hits)),
         Mode::Update(state) => (true, overlays::update(frame, state, body, theme, &mut hits)),
