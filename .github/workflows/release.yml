@@ -1,0 +1,321 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve release tag and commit
+        id: release
+        shell: bash
+        run: |
+          source scripts/meta.sh
+          tag="v$VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              [[ "$GITHUB_REF" == "refs/tags/$tag" ]] || {
+                  echo "$GITHUB_REF does not match Cargo.toml version $VERSION" >&2
+                  exit 1
+              }
+          elif git show-ref --verify --quiet "refs/tags/$tag"; then
+              # Rebuild the exact tagged commit on a manual retry.
+              git checkout --detach "refs/tags/$tag"
+              source scripts/meta.sh
+              [[ "$tag" == "v$VERSION" ]] || {
+                  echo "$tag does not match the tagged Cargo.toml version $VERSION" >&2
+                  exit 1
+              }
+          fi
+          {
+              echo "version=$VERSION"
+              echo "tag=$tag"
+              echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, armv7-unknown-linux-musleabihf, arm-unknown-linux-musleabihf
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build and packaging tools
+        run: |
+          pip install cargo-zigbuild==0.22.3 ziglang==0.16.0
+          cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Build and verify static Linux binaries
+        shell: bash
+        run: |
+          source scripts/meta.sh
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+                        armv7-unknown-linux-musleabihf arm-unknown-linux-musleabihf; do
+              cargo zigbuild --locked --release --target "$target"
+              binary="target/$target/release/$BIN"
+              dynamic="$(readelf -d "$binary")"
+              segments="$(readelf -l "$binary")"
+              if [[ "$dynamic" == *'(NEEDED)'* || "$segments" == *' INTERP '* ]]; then
+                  echo "$binary is dynamically linked." >&2
+                  exit 1
+              fi
+              case "$target" in
+                  armv7-*) cpu=v7 ;;
+                  arm-*) cpu=v6 ;;
+                  *) continue ;;
+              esac
+              attributes="$(readelf -A "$binary")"
+              if ! grep -E "Tag_CPU_arch: $cpu$" <<< "$attributes"; then
+                  echo "$binary does not report Tag_CPU_arch $cpu." >&2
+                  exit 1
+              fi
+          done
+          test "$(target/x86_64-unknown-linux-musl/release/"$BIN" --version)" = "$BIN $VERSION"
+      - run: scripts/package-all.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+          if-no-files-found: error
+
+  macos:
+    needs: resolve
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Build and verify macOS binaries
+        shell: bash
+        run: |
+          source scripts/meta.sh
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+              cargo build --locked --release --target "$target"
+              binary="target/$target/release/$BIN"
+              minos="$(otool -l "$binary" | awk '$1 == "minos" { print $2 }')"
+              test "$minos" = 11.0 || { echo "$binary has minos $minos, expected 11.0" >&2; exit 1; }
+          done
+          binary="target/aarch64-apple-darwin/release/$BIN"
+          codesign -v "$binary"
+          test "$("$binary" --version)" = "$BIN $VERSION"
+          if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+              binary="target/x86_64-apple-darwin/release/$BIN"
+              test "$("$binary" --version)" = "$BIN $VERSION"
+          fi
+      - run: scripts/package-all.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-macos
+          path: dist/*-apple-darwin.tar.gz
+          if-no-files-found: error
+
+  windows:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build and verify the Windows executable
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          cargo build --locked --release --target $env:TARGET
+          if ($LASTEXITCODE -ne 0) { throw 'Windows build failed.' }
+          $reported = & "./target/$env:TARGET/release/sshtui.exe" --version
+          if ($LASTEXITCODE -ne 0 -or ($reported -join [Environment]::NewLine) -cne "sshtui $env:VERSION") {
+              throw "Expected sshtui $env:VERSION, got $reported."
+          }
+      - run: bash scripts/package-all.sh
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-${{ matrix.target }}
+          path: dist/*-pc-windows-msvc.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, linux, macos, windows]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      COMMIT: ${{ needs.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: assets-*
+          merge-multiple: true
+          path: dist
+      - name: Check release assets and regenerate SHA256SUMS
+        shell: bash
+        run: |
+          source scripts/meta.sh
+          cp install.sh install.ps1 dist/
+          scripts/package-all.sh --checksums-only
+
+          expected=(
+              install.sh install.ps1 SHA256SUMS
+              "$BIN-$VERSION-aarch64-apple-darwin.tar.gz"
+              "$BIN-$VERSION-x86_64-apple-darwin.tar.gz"
+              "$BIN-$VERSION-x86_64-unknown-linux-musl.tar.gz"
+              "$BIN-$VERSION-aarch64-unknown-linux-musl.tar.gz"
+              "$BIN-$VERSION-armv7-unknown-linux-musleabihf.tar.gz"
+              "$BIN-$VERSION-arm-unknown-linux-musleabihf.tar.gz"
+              "$BIN-$VERSION-x86_64-pc-windows-msvc.zip"
+              "$BIN-$VERSION-aarch64-pc-windows-msvc.zip"
+          )
+          for arch in amd64 arm64 armhf; do
+              expected+=("${BIN}_${VERSION}_$arch.deb" "${BIN}_$arch.deb")
+          done
+          for arch in x86_64 aarch64; do
+              expected+=("$BIN-$VERSION-1.$arch.rpm" "$BIN-$arch.rpm")
+          done
+          cd dist
+          diff -u <(printf '%s\n' "${expected[@]}" | LC_ALL=C sort) <(ls -1A | LC_ALL=C sort)
+          sha256sum -c SHA256SUMS
+
+      - name: Verify or create the tag and prepare the draft
+        id: draft
+        shell: bash
+        run: |
+          remote_tag() {
+              local refs
+              refs="$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")" || return
+              awk '$2 ~ /\^\{\}$/ { print $1; peeled = 1 } NR == 1 { first = $1 }
+                   END { if (!peeled && NR) print first }' <<< "$refs"
+          }
+
+          tagged="$(remote_tag)"
+          if [[ -z "$tagged" ]]; then
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                  -f "ref=refs/tags/$TAG" -f "sha=$COMMIT"
+              tagged="$(remote_tag)"
+          fi
+          [[ "$tagged" == "$COMMIT" ]] || {
+              echo "$TAG points to $tagged, expected $COMMIT." >&2
+              exit 1
+          }
+
+          state="$(gh release view "$TAG" --json isDraft --jq .isDraft || true)"
+          if [[ "$state" == false ]]; then
+              echo "already_published=true" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$COMMIT" != "$GITHUB_SHA" ]]; then
+              echo "Run this workflow on $TAG so the attestation records the built commit." >&2
+              exit 1
+          fi
+          if [[ "$state" != true ]]; then
+              source scripts/meta.sh
+              notes=".github/release-notes/$TAG.md"
+              if [[ -f "$notes" ]]; then
+                  title="$(sed -nE 's/^# +//p' "$notes" | sed -n '1p')"
+                  body="$RUNNER_TEMP/release-notes.md"
+                  awk '!heading && /^# / { heading = 1; next } { print }' "$notes" > "$body"
+                  gh release create "$TAG" --draft --verify-tag \
+                      --title "${title:-$BIN $VERSION}" --notes-file "$body"
+              else
+                  gh release create "$TAG" --draft --verify-tag \
+                      --title "$BIN $VERSION" --generate-notes
+              fi
+          fi
+
+      - name: Attest release assets
+        if: steps.draft.outputs.already_published != 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Upload all assets and publish the draft
+        if: steps.draft.outputs.already_published != 'true'
+        shell: bash
+        run: |
+          gh release upload "$TAG" dist/* --clobber
+          uploaded="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          diff -u <(ls -1 dist | LC_ALL=C sort) <(printf '%s\n' "$uploaded" | LC_ALL=C sort)
+          gh release edit "$TAG" --draft=false
+
+      - name: Update Homebrew tap
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+              echo "::warning::HOMEBREW_TAP_TOKEN is missing; run scripts/post-release.sh to update the tap."
+              exit 0
+          fi
+
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          gh release download "$TAG" --pattern SHA256SUMS --output "$work/SHA256SUMS"
+          formula="$work/sshtui.rb"
+          scripts/update-formula.sh "${TAG#v}" "$work/SHA256SUMS" "$formula"
+
+          export GH_TOKEN="$HOMEBREW_TAP_TOKEN"
+          tap=hungryZoo/homebrew-tap
+          path=Formula/sshtui.rb
+          tree="$(gh api "repos/$tap/commits?per_page=1" --jq '.[0].commit.tree.sha')"
+          sha="$(gh api "repos/$tap/git/trees/$tree?recursive=1" --jq '.tree[] | select(.path == "Formula/sshtui.rb").sha')"
+          if [[ "$sha" == "$(git hash-object "$formula")" ]]; then
+              echo "The formula already points at $TAG."
+              exit 0
+          fi
+          args=()
+          if [[ -n "$sha" ]]; then
+              args=(-f "sha=$sha")
+          fi
+          gh api --silent --method PUT "repos/$tap/contents/$path" \
+              -f "message=sshtui $TAG" -f "content=$(base64 -w 0 "$formula")" "${args[@]}"

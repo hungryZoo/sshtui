@@ -2,9 +2,48 @@
 name = "sshtui"
 version = "0.1.0"
 edition = "2024"
+authors = ["hungryZoo"]
 description = "A TUI wrapper around the system ssh client that stores hosts in ~/.ssh/config"
+license = "MIT"
+homepage = "https://github.com/hungryZoo/sshtui"
 repository = "https://github.com/hungryZoo/sshtui"
+readme = "README.md"
+keywords = ["ssh", "tui", "terminal", "openssh"]
+categories = ["command-line-utilities"]
 publish = false
+
+[package.metadata.deb]
+extended-description = """
+sshtui is a terminal user interface that runs the system ssh client.
+It stores hosts in ~/.ssh/config and does not implement the SSH protocol.
+"""
+maintainer = "hungryZoo <hungryZoo@users.noreply.github.com>"
+depends = "openssh-client"
+section = "net"
+revision = ""
+assets = [
+    ["target/release/sshtui", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/sshtui/README", "644"],
+    ["LICENSE", "usr/share/doc/sshtui/LICENSE", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Terminal UI for the system ssh client with hosts stored in ~/.ssh/config"
+license = "MIT"
+auto-req = "disabled"
+assets = [
+    { source = "target/release/sshtui", dest = "/usr/bin/sshtui", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/sshtui/README", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/doc/sshtui/LICENSE", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+openssh-clients = "*"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
 
 [dependencies]
 anyhow = "1.0.104"

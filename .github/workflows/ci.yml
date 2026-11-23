@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck install.sh scripts/*.sh
+      - run: sh -n install.sh && dash -n install.sh
+      - name: Check installer ASCII and PowerShell syntax
+        shell: pwsh
+        run: |
+          $file = (Resolve-Path -LiteralPath './install.ps1').Path
+          if ([IO.File]::ReadAllBytes($file) | Where-Object { $_ -notin 9, 10, 13 -and ($_ -lt 32 -or $_ -gt 126) }) {
+              throw 'install.ps1 must contain only ASCII text.'
+          }
+          $parseErrors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors)
+          if ($parseErrors.Count) {
+              $parseErrors | ForEach-Object { Write-Host $_ }
+              throw 'install.ps1 contains PowerShell parse errors.'
+          }
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-package
+      - name: Install packaging tools
+        run: |
+          pip install cargo-zigbuild==0.22.3 ziglang==0.16.0
+          cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Build and package
+        run: |
+          cargo zigbuild --locked --release --target x86_64-unknown-linux-musl
+          scripts/package-all.sh
+      - name: Verify the assets and run the installer
+        shell: bash
+        run: |
+          source scripts/meta.sh
+          for asset in \
+              "$BIN-$VERSION-x86_64-unknown-linux-musl.tar.gz" \
+              "${BIN}_${VERSION}_amd64.deb" "${BIN}_amd64.deb" \
+              "$BIN-$VERSION-1.x86_64.rpm" "$BIN-x86_64.rpm" \
+              install.sh install.ps1 SHA256SUMS; do
+              test -f "dist/$asset" || { echo "Missing dist/$asset" >&2; exit 1; }
+          done
+          (cd dist && sha256sum -c SHA256SUMS)
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir "$scratch/home"
+          export HOME="$scratch/home" SSHTUI_SSH_DIR="$scratch/home/.ssh"
+          export SSHTUI_VERSION="$VERSION" SSHTUI_DOWNLOAD_BASE="file://$PWD/dist"
+          sh dist/install.sh --bin-dir "$scratch/bin"
+          test "$("$scratch/bin/$BIN" --version)" = "$BIN $VERSION"
