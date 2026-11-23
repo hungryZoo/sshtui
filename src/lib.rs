@@ -4,10 +4,12 @@
 pub mod app;
 pub mod config;
 pub mod dialog;
+pub mod history;
 pub mod keys;
 pub mod known_hosts;
 pub mod paths;
 pub mod ssh;
+pub mod state;
 pub mod system;
 pub mod tui;
 pub mod ui;
