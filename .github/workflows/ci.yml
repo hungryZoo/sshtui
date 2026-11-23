@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -63,11 +63,12 @@ jobs:
           key: musl-package
       - name: Install packaging tools
         run: |
-          pip install cargo-zigbuild==0.22.3 ziglang==0.16.0
+          pip install cargo-zigbuild==0.24.1 ziglang==0.16.0
           cargo install --locked cargo-deb cargo-generate-rpm
       - name: Build and package
         run: |
           cargo zigbuild --locked --release --target x86_64-unknown-linux-musl
+          cargo zigbuild --locked --release --target aarch64-unknown-linux-musl
           scripts/package-all.sh
       - name: Verify the assets and run the installer
         shell: bash
@@ -77,6 +78,9 @@ jobs:
               "$BIN-$VERSION-x86_64-unknown-linux-musl.tar.gz" \
               "${BIN}_${VERSION}_amd64.deb" "${BIN}_amd64.deb" \
               "$BIN-$VERSION-1.x86_64.rpm" "$BIN-x86_64.rpm" \
+              "$BIN-$VERSION-aarch64-unknown-linux-musl.tar.gz" \
+              "${BIN}_${VERSION}_arm64.deb" "${BIN}_arm64.deb" \
+              "$BIN-$VERSION-1.aarch64.rpm" "$BIN-aarch64.rpm" \
               install.sh install.ps1 SHA256SUMS; do
               test -f "dist/$asset" || { echo "Missing dist/$asset" >&2; exit 1; }
           done

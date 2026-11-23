@@ -965,7 +965,7 @@ Windows 대상 타입 검사만 통과. 두 대상의 릴리스 빌드와 ZIP �
 | 미검증 | 실제 마우스 장치와 터미널 에뮬레이터(Terminal, iTerm2, Windows Terminal 등)에서의 클릭과 휠, 이동 이벤트 보고와 호버 애니메이션의 체감 품질, 키 안내 호버의 버튼 표현 체감 | 미검증 |
 | 미검증 | Windows와 Linux에서의 실행(링크, 터미널 동작, 종료 코드 전달) | 미검증 |
 | 미검증 | zenity의 `Ctrl+H`, kdialog의 `Alt+.` 단축키 안내 문구의 정확성 | 문서 미확인 |
-| 수동 | 로컬 릴리스 빌드. `scripts/build-all.sh`로 6개 대상 빌드(zig 0.16.0, cargo-zigbuild 0.22.3). `file`로 Linux 4개 대상의 정적 링크 확인. ARM 속성 섹션의 `Tag_CPU_arch`는 `armv7-unknown-linux-musleabihf`가 v7, `arm-unknown-linux-musleabihf`가 v6. macOS 2개 대상의 `minos`는 11.0. arm64 바이너리의 `codesign -v` 통과 | 확인 (macOS) |
+| 수동 | 로컬 릴리스 빌드. `scripts/build-all.sh`로 6개 대상 빌드(Rust 1.100.0, zig 0.16.0, cargo-zigbuild 0.24.1). `file`로 Linux 4개 대상의 정적 링크 확인. ARM 속성 섹션의 `Tag_CPU_arch`는 `armv7-unknown-linux-musleabihf`가 v7, `arm-unknown-linux-musleabihf`가 v6. macOS 2개 대상의 `minos`는 11.0. arm64 바이너리의 `codesign -v` 통과 | 확인 (macOS) |
 | 수동 | 로컬 macOS 바이너리 실행. `aarch64-apple-darwin`의 `--version` 직접 실행, `x86_64-apple-darwin`의 `--version`은 Rosetta에서 실행 | 확인 (macOS) |
 | 수동 | 로컬 패키징. `scripts/package-all.sh`로 `dist/`에 19개 자산 생성(tar.gz 6개, deb 3개와 별칭 3개, rpm 2개와 별칭 2개, `install.sh`, `install.ps1`, `SHA256SUMS`). 체크섬 18개 항목 검증 통과. `.deb`의 `control` 필드(`Package`, `Architecture: armhf`, `Depends: openssh-client`)와 파일 배치, `.rpm` 파일 목록 확인 | 확인 (macOS) |
 | 수동 | 로컬 설치 스크립트. `SSHTUI_DOWNLOAD_BASE=file://.../dist`와 임시 `HOME`으로 `dash install.sh`와 `sh install.sh` 실행. 지정한 디렉터리와 기본 `~/.local/bin` 설치, 설치 후 `--version` 일치, zsh의 `export`와 fish의 `fish_add_path` 및 tcsh의 `set path` 안내 확인. 체크섬 불일치 시 종료 코드 1 및 설치 없음. 기준 URL만 주고 버전을 생략하면 오류 | 확인 (macOS) |

@@ -60,7 +60,7 @@ jobs:
           python-version: '3.12'
       - name: Install build and packaging tools
         run: |
-          pip install cargo-zigbuild==0.22.3 ziglang==0.16.0
+          pip install cargo-zigbuild==0.24.1 ziglang==0.16.0
           cargo install --locked cargo-deb cargo-generate-rpm
       - name: Build and verify static Linux binaries
         shell: bash
