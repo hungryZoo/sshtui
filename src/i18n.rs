@@ -311,7 +311,7 @@ const KO: Text = Text {
     needs_key_file: "키 로그인에 키 파일 필요",
     no_changes: "변경 없음",
     no_backup: "없음",
-    server_password_prompt: "sshtui: 서버 비밀번호 입력 가능",
+    server_password_prompt: "sshtui: 서버가 비밀번호를 요청할 수 있음",
     key_install_finished: "sshtui: 키 설치 완료",
     key_install_failed: "sshtui: 키 설치 실패",
     return_after_install: "Enter로 sshtui 복귀",
@@ -582,7 +582,7 @@ impl Lang {
                     ValidationError::ControlChar { field } => {
                         format!("{}에 제어 문자 사용 불가", caption(*field))
                     }
-                    ValidationError::InvalidPort => "포트는 1~65535 사이의 숫자만 허용".into(),
+                    ValidationError::InvalidPort => "포트는 1-65535 범위의 숫자만 허용".into(),
                     ValidationError::DuplicateNickname(name) => {
                         format!("이미 사용 중인 닉네임 {name:?}")
                     }

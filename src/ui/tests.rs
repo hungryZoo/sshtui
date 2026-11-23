@@ -3159,7 +3159,7 @@ fn korean_validation_errors_are_shown_in_the_form() {
     assert_visible(&draw(&app, 100, 28), &["주소 첫 글자 '-' 사용 불가"]);
     set_field(&mut app, FormField::Address, "server");
     set_field(&mut app, FormField::Port, "65536");
-    assert_visible(&draw(&app, 100, 28), &["포트는 1~65535 사이의 숫자만 허용"]);
+    assert_visible(&draw(&app, 100, 28), &["포트는 1-65535 범위의 숫자만 허용"]);
     set_field(&mut app, FormField::Port, "22");
     set_field(&mut app, FormField::Nickname, "web");
     assert_visible(&draw(&app, 100, 28), &["이미 사용 중인 닉네임 \"web\""]);
