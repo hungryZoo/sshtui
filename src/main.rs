@@ -8,7 +8,7 @@ use sshtui::ssh::exec::{find_ssh, run_interactive};
 use sshtui::system::SystemBackend;
 use sshtui::ui::ColorMode;
 use sshtui::update::{self, CURRENT_VERSION, CheckOutcome, InstallMethod, UpdatePlan};
-use sshtui::{dialog, history, state, tui};
+use sshtui::{dialog, history, i18n, state, tui};
 
 const NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -62,6 +62,7 @@ fn main() -> std::process::ExitCode {
             println!("  --check-update  Check for a new release");
             println!("  --update        Check for a new release and install it if available");
             println!("  SSHTUI_SSH_DIR  Override the SSH directory (default: ~/.ssh)");
+            println!("  {}     Force the TUI language (ko or en)", i18n::LANG_ENV);
             println!(
                 "  SSHTUI_NO_MOUSE  Disable mouse support (keeps the terminal's own text selection)"
             );
@@ -162,7 +163,14 @@ fn run() -> anyhow::Result<ExitCode> {
         mouse: mouse_enabled(std::env::var_os("SSHTUI_NO_MOUSE").as_deref()),
         color: color_mode(std::env::var_os("COLORTERM").as_deref()),
     };
-    match tui::run(App::new(backend), options)? {
+    let app = App::with_lang(
+        backend,
+        i18n::detect(
+            &|name| std::env::var_os(name),
+            i18n::system_locale().as_deref(),
+        ),
+    );
+    match tui::run(app, options)? {
         Exit::Quit => Ok(ExitCode::SUCCESS),
         Exit::Connect(args) => {
             let code = run_interactive(&ssh, &args)?;

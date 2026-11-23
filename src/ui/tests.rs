@@ -2843,3 +2843,324 @@ fn enter_guidance_includes_the_key_install_step_for_direct_and_edited_connection
         ],
     );
 }
+
+fn visible_row(backend: &TestBackend, y: u16) -> String {
+    let buffer = backend.buffer();
+    let mut x = buffer.area.left();
+    let mut line = String::new();
+    while x < buffer.area.right() {
+        let symbol = buffer[(x, y)].symbol();
+        let width = symbol.width().max(1) as u16;
+        assert!(x + width <= buffer.area.right(), "{symbol:?} at ({x}, {y})");
+        for continuation in x + 1..x + width {
+            assert_eq!(buffer[(continuation, y)].symbol(), " ");
+        }
+        line.push_str(symbol);
+        x += width;
+    }
+    line.trim_end().to_owned()
+}
+
+fn visible_position(backend: &TestBackend, text: &str) -> (u16, u16) {
+    let buffer = backend.buffer();
+    for y in buffer.area.top()..buffer.area.bottom() {
+        let line = visible_row(backend, y);
+        if let Some(index) = line.find(text) {
+            return (line[..index].width() as u16, y);
+        }
+    }
+    panic!("missing {text:?} in terminal buffer\n{buffer:?}");
+}
+
+fn assert_visible(backend: &TestBackend, expected: &[&str]) {
+    for text in expected {
+        visible_position(backend, text);
+    }
+}
+
+#[test]
+fn korean_list_shows_localized_rows_and_aligned_details() {
+    use crate::i18n::Lang;
+
+    let mut backend = FakeBackend::new(HOSTS);
+    backend.read_only = true;
+    let mut app = App::with_lang(backend, Lang::Ko);
+    let view = draw(&app, 100, 28);
+    assert_eq!(visible_row(&view, 1), "  sshtui  호스트 3개");
+    assert_eq!(visible_row(&view, 3), "   / 호스트 필터");
+    assert_visible(
+        &view,
+        &[
+            "+ 새 접속",
+            "읽기 전용",
+            "읽기 전용 파일",
+            "Enter 실행 명령",
+        ],
+    );
+    for (index, (label, value)) in [
+        ("사용자", "alice"),
+        ("주소", "www.example.com"),
+        ("포트", "2222"),
+        ("키 파일", "~/.ssh/first"),
+        ("출처", "~/.ssh/config:2"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let y = 8 + index as u16 + u16::from(index == 4);
+        let line = visible_row(&view, y);
+        let label_index = line.find(label).unwrap();
+        let value_index = line.find(value).unwrap();
+        assert_eq!(line[..label_index].width(), 57, "{line}");
+        assert_eq!(line[..value_index].width(), 68, "{line}");
+    }
+    assert_eq!(view.buffer()[(51, 5)].symbol(), "용");
+
+    let help =
+        "enter  접속   e 편집   d 삭제   x known_host 삭제   / 필터   r 다시 읽기   esc 종료";
+    for width in [100, 96] {
+        assert_eq!(visible_row(&draw(&app, width, 28), 26).trim_start(), help);
+    }
+
+    press(&mut app, KeyCode::Char('/'));
+    app.handle_paste("queue");
+    let view = draw(&app, 100, 28);
+    assert_visible(
+        &view,
+        &[
+            "호스트 3개 중 1개",
+            "enter  필터 적용   ↑↓ 선택   esc 필터 해제",
+        ],
+    );
+    press(&mut app, KeyCode::Enter);
+    let host_help = visible_row(&draw(&app, 95, 28), 26);
+    press(&mut app, KeyCode::Down);
+    let new_help = visible_row(&draw(&app, 95, 28), 26);
+    let (_, host_secondary) = host_help.split_once("접속   ").unwrap();
+    let (_, new_secondary) = new_help.split_once("새 접속   ").unwrap();
+    assert_eq!(host_secondary, new_secondary);
+    assert!(new_secondary.ends_with("esc 필터 해제"));
+}
+
+#[test]
+fn korean_new_form_aligns_inputs_checkboxes_and_enter_steps() {
+    use crate::i18n::Lang;
+
+    let mut app = App::with_lang(FakeBackend::new(""), Lang::Ko);
+    for (field, value) in [
+        (FormField::Nickname, "prod-web"),
+        (FormField::User, "deploy"),
+        (FormField::Address, "203.0.113.12"),
+        (FormField::Port, "2222"),
+        (FormField::KeyFile, "~/.ssh/id_ed25519"),
+    ] {
+        set_field(&mut app, field, value);
+    }
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char(' '));
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    for (field, label, content) in [
+        (FormField::Nickname, "닉네임", "prod-web"),
+        (FormField::User, "사용자", "deploy"),
+        (FormField::Address, "주소", "203.0.113.12"),
+        (FormField::Port, "포트", "2222"),
+        (FormField::KeyFile, "키 파일", "~/.ssh/id_ed25519"),
+        (FormField::InstallKey, "키 로그인", "[x]"),
+        (FormField::DisablePassword, "비밀번호", "[ ]"),
+    ] {
+        let (y, line) = (0..28)
+            .map(|y| (y, visible_row(&view, y)))
+            .find(|(_, line)| line.trim_start_matches([' ', '›']).starts_with(label))
+            .unwrap();
+        assert_eq!(line[..line.find(label).unwrap()].width(), 4);
+        assert_eq!(
+            line[..line.find(content).unwrap()].width(),
+            15 + usize::from(!field.is_checkbox())
+        );
+        if !field.is_checkbox() {
+            assert_eq!(
+                hits.hit(15, y),
+                Some(&ClickTarget::FormField { field, column: 0 })
+            );
+            assert_eq!(
+                hits.hit(14, y),
+                Some(&ClickTarget::FormField {
+                    field,
+                    column: u16::MAX
+                })
+            );
+        }
+    }
+    assert_visible(
+        &view,
+        &[
+            "새 접속",
+            "필수",
+            "선택, 입력하면 이 호스트를 저장",
+            "서버에 공개 키 설치",
+            "서버 비밀번호 1회 입력",
+            "비밀번호 입력 비활성화(권장)",
+            "Enter 실행 내용",
+            "enter  저장 후 접속   tab 다음   space 전환   esc 뒤로",
+        ],
+    );
+
+    let (save_column, save_y) = visible_position(&view, "1 저장");
+    let (key_column, key_y) = visible_position(&view, "2 키");
+    let (run_column, run_y) = visible_position(&view, "3 실행");
+    assert_eq!(save_column, key_column);
+    assert_eq!(save_column, run_column);
+    for (y, content) in [
+        (save_y, "prod-web →"),
+        (key_y, "서버에 ~/.ssh/id_ed25519.pub 설치"),
+        (run_y, "$ ssh prod-web"),
+    ] {
+        let line = visible_row(&view, y);
+        assert_eq!(line[..line.find(content).unwrap()].width(), 12, "{line}");
+    }
+}
+
+#[test]
+fn korean_confirmations_show_questions_choices_backups_and_help() {
+    use crate::i18n::Lang;
+
+    let backend = FakeBackend::new(HOSTS);
+    fs::write(
+        known_hosts::file_path(backend.paths()),
+        "[www.example.com]:2222 ssh-ed25519 fake-key\n",
+    )
+    .unwrap();
+    let mut app = App::with_lang(backend, Lang::Ko);
+
+    press(&mut app, KeyCode::Char('d'));
+    let view = draw(&app, 100, 28);
+    assert_visible(
+        &view,
+        &[
+            "sshtui  web 삭제",
+            "1줄 변경 예정  -1",
+            "~/.ssh/config에서 web 삭제?    취소    삭제",
+            "현재 파일 백업: ~/.ssh/.config.sshtui.bak",
+            "enter  취소   ←→ 선택 이동   y 삭제   n 목록으로   ↑↓ 스크롤",
+        ],
+    );
+    press(&mut app, KeyCode::Right);
+    assert_visible(&draw(&app, 100, 28), &["enter  삭제   ←→ 선택 이동"]);
+
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('x'));
+    assert_visible(
+        &draw(&app, 100, 28),
+        &[
+            "sshtui  web 호스트 키 삭제",
+            "[www.example.com]:2222 항목 1개 삭제 예정  -1",
+            "[www.example.com]:2222 known_hosts 항목 1개 삭제?    취소    삭제",
+            "현재 파일 백업: ~/.ssh/.known_hosts.sshtui.bak",
+            "enter  취소   ←→ 선택 이동   y 삭제   n 목록으로   ↑↓ 스크롤",
+        ],
+    );
+}
+
+#[test]
+fn korean_popups_show_titles_and_key_hints() {
+    use crate::i18n::Lang;
+
+    let mut backend = FakeBackend::new(HOSTS).with_keys();
+    backend.history_commands = vec!["ssh deploy@other.example.com".into()];
+    backend.update_plan = Some(UpdatePlan {
+        current: "1.0.0".into(),
+        latest: "2.0.0".into(),
+        method: InstallMethod::Brew,
+    });
+    let mut app = App::with_lang(backend, Lang::Ko);
+    assert_visible(&draw(&app, 100, 28), &["후보 1개 i", "업데이트 있음 u"]);
+
+    for (key, expected) in [
+        (
+            'i',
+            &[
+                "셸 히스토리에서 가져오기",
+                "1개 발견",
+                "enter  폼 채우기   ↑↓ 선택   esc 닫기",
+            ][..],
+        ),
+        (
+            'u',
+            &[
+                "sshtui 업데이트",
+                "설치 방식",
+                "명령",
+                "enter  업데이트 후 종료   esc 취소",
+            ][..],
+        ),
+    ] {
+        press(&mut app, KeyCode::Char(key));
+        assert_visible(&draw(&app, 100, 28), expected);
+        press(&mut app, KeyCode::Esc);
+    }
+
+    press(&mut app, KeyCode::Char('n'));
+    press(&mut app, KeyCode::F(2));
+    assert_visible(
+        &draw(&app, 100, 28),
+        &[
+            "키 파일 선택",
+            "~/.ssh에 키 2개",
+            "enter  이 키 사용   ↑↓ 선택   esc 취소",
+        ],
+    );
+    press(&mut app, KeyCode::Esc);
+    set_field(&mut app, FormField::Nickname, "new");
+    set_field(&mut app, FormField::Address, "www.example.com");
+    set_field(&mut app, FormField::User, "deploy");
+    press(&mut app, KeyCode::Enter);
+    assert_visible(
+        &draw(&app, 100, 28),
+        &[
+            "저장 설정과 실제 SSH 설정 불일치",
+            "사용자: 저장 값 \"deploy\", SSH 사용 값 \"alice\"",
+            "enter  그대로 접속   esc 목록으로",
+        ],
+    );
+}
+
+#[test]
+fn korean_rendering_drops_a_wide_character_that_would_cross_the_edge() {
+    use crate::i18n::Lang;
+
+    let name = "가".repeat(24);
+    let mut app = App::with_lang(FakeBackend::new(&format!("Host {name}\n")), Lang::Ko);
+    press(&mut app, KeyCode::Char('e'));
+    for (width, count) in [(29, 10), (30, 11), (1, 0)] {
+        let view = draw(&app, width, 28);
+        if count > 0 {
+            assert_eq!(
+                visible_row(&view, 1),
+                format!("sshtui  {}", "가".repeat(count))
+            );
+        }
+        for y in 0..28 {
+            assert!(visible_row(&view, y).width() <= usize::from(width));
+        }
+    }
+}
+
+#[test]
+fn korean_validation_errors_are_shown_in_the_form() {
+    use crate::i18n::Lang;
+
+    let mut app = App::with_lang(FakeBackend::new(HOSTS), Lang::Ko);
+    press(&mut app, KeyCode::Char('n'));
+    assert_visible(&draw(&app, 100, 28), &["주소 입력 필요"]);
+    press(&mut app, KeyCode::Enter);
+    assert_visible(&draw(&app, 100, 28), &["주소 필수"]);
+
+    set_field(&mut app, FormField::Address, "-server");
+    assert_visible(&draw(&app, 100, 28), &["주소 첫 글자 '-' 사용 불가"]);
+    set_field(&mut app, FormField::Address, "server");
+    set_field(&mut app, FormField::Port, "65536");
+    assert_visible(&draw(&app, 100, 28), &["포트는 1~65535 사이의 숫자만 허용"]);
+    set_field(&mut app, FormField::Port, "22");
+    set_field(&mut app, FormField::Nickname, "web");
+    assert_visible(&draw(&app, 100, 28), &["이미 사용 중인 닉네임 \"web\""]);
+}

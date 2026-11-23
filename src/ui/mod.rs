@@ -21,11 +21,13 @@ use crate::app::{App, Backend, ClickTarget, Mode, TextInput};
 pub use self::hover::{Hover, HoverKey};
 pub use self::theme::{ColorMode, Theme};
 
-use self::layout::{below, header_line, inset, left, render_lines, right_of, row, rule};
+use self::layout::{
+    below, header_line, inset, left, padded_cells, render_lines, right_of, row, rule,
+};
 use self::theme::{HOVER_ACCENT, PLAIN, ROW, bold};
 
 type KeyHint = (&'static str, &'static str, Option<KeyCode>);
-type KeyHints = (bool, &'static [KeyHint]);
+type KeyHints = (bool, Vec<KeyHint>);
 type HoverFrame<'a> = Option<(&'a Hover, Instant)>;
 
 fn intensity(hover: HoverFrame<'_>, key: HoverKey) -> f32 {
@@ -105,6 +107,7 @@ pub fn render<B: Backend>(
     }
 
     let paths = app.backend().paths();
+    let lang = app.lang();
     let base_help = match app.mode() {
         Mode::List | Mode::Import(_) | Mode::Notice(_) | Mode::Update(_) => {
             list::header(frame, app, header, backdrop, &mut hits, backdrop_hover);
@@ -113,7 +116,7 @@ pub fn render<B: Backend>(
         }
         Mode::Form(_) | Mode::KeyPicker(_) => {
             let Some(state) = app.form() else { return hits };
-            let (title, source) = form::heading(state, paths);
+            let (title, source) = form::heading(state, paths, lang);
             header_line(
                 frame,
                 header,
@@ -144,15 +147,7 @@ pub fn render<B: Backend>(
         ),
         Mode::Import(state) => (
             true,
-            overlays::import(
-                frame,
-                state,
-                app.suggestions(),
-                body,
-                theme,
-                &mut hits,
-                hover,
-            ),
+            overlays::import(frame, state, app, body, theme, &mut hits, hover),
         ),
         Mode::Notice(state) => (true, overlays::notice(frame, state, body, theme, &mut hits)),
         Mode::Update(state) => (true, overlays::update(frame, state, body, theme, &mut hits)),
@@ -193,11 +188,14 @@ fn render_help<B: Backend>(
     if last >= 2 && pair_width(0, &hints[0]) + gap + pair_width(last, &hints[last]) <= available {
         // Keep filtered-list hints stable as the selection moves between host and new rows.
         let reserved = if matches!(app.mode(), Mode::List)
-            && app.new_row_selected()
             && !app.is_filtering()
             && !app.filter().value().is_empty()
         {
-            "connect".len() - "new".len()
+            let text = app.lang().text();
+            text.connect
+                .width()
+                .max(text.new.width())
+                .saturating_sub(hints[0].1.width())
         } else {
             0
         };
@@ -288,10 +286,9 @@ fn labeled_lines(
     }
     for (index, line) in lines.iter_mut().enumerate() {
         let label = if index == 0 { label } else { "" };
-        let width = usize::from(label_width);
         line.spans.insert(
             0,
-            Span::styled(format!("{label:<width$.width$}"), theme.muted),
+            Span::styled(padded_cells(label, label_width), theme.muted),
         );
     }
     lines

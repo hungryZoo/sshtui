@@ -5,6 +5,7 @@ pub mod app;
 pub mod config;
 pub mod dialog;
 pub mod history;
+pub mod i18n;
 pub mod keys;
 pub mod known_hosts;
 pub mod paths;

@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::config::{DiffHunk, PendingWrite};
+use crate::i18n::Lang;
 use crate::keys::KeyInfo;
 
 use super::{FormState, KeyInstall};
@@ -48,18 +49,25 @@ pub struct ConfirmState {
     pub(super) pending: PendingWrite,
     pub(super) action: ConfirmAction,
     pub(super) alias: String,
+    lang: Lang,
     scroll: usize,
     choice: Option<ConfirmChoice>,
 }
 
 impl ConfirmState {
-    pub(super) fn new(pending: PendingWrite, alias: String, action: ConfirmAction) -> Self {
+    pub(super) fn new(
+        lang: Lang,
+        pending: PendingWrite,
+        alias: String,
+        action: ConfirmAction,
+    ) -> Self {
         let choice =
             (!matches!(action, ConfirmAction::Edit { .. })).then_some(ConfirmChoice::Cancel);
         Self {
             pending,
             action,
             alias,
+            lang,
             scroll: 0,
             choice,
         }
@@ -67,11 +75,12 @@ impl ConfirmState {
 
     /// Returns the confirmation title for the requested change.
     pub fn title(&self) -> String {
-        match self.action {
-            ConfirmAction::Edit { .. } => format!("Save {}", self.alias),
-            ConfirmAction::Delete => format!("Delete {}", self.alias),
-            ConfirmAction::Forget { .. } => format!("Forget host key for {}", self.alias),
-        }
+        self.lang.confirm_title(self.kind(), &self.alias)
+    }
+
+    /// Returns the language of the confirmation.
+    pub(crate) fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// Returns the path of the file that will be changed.
@@ -109,12 +118,9 @@ impl ConfirmState {
     pub(crate) fn question(&self, path: &str) -> Option<String> {
         match &self.action {
             ConfirmAction::Edit { .. } => None,
-            ConfirmAction::Delete => Some(format!("Delete {} from {path}?", self.alias)),
+            ConfirmAction::Delete => Some(self.lang.delete_question(&self.alias, path)),
             ConfirmAction::Forget { name, removed } => {
-                let entries = if *removed == 1 { "entry" } else { "entries" };
-                Some(format!(
-                    "Remove {removed} known_hosts {entries} for {name}?"
-                ))
+                Some(self.lang.forget_question(*removed, name))
             }
         }
     }
@@ -161,15 +167,22 @@ pub struct KeyPickerState {
     pub(super) form: FormState,
     keys: Vec<KeyInfo>,
     selection: usize,
+    lang: Lang,
 }
 
 impl KeyPickerState {
-    pub(super) fn new(form: FormState, keys: Vec<KeyInfo>) -> Self {
+    pub(super) fn new(form: FormState, keys: Vec<KeyInfo>, lang: Lang) -> Self {
         Self {
             form,
             keys,
             selection: 0,
+            lang,
         }
+    }
+
+    /// Returns the language of the key picker.
+    pub(crate) fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// Returns the form below the overlay.
@@ -203,7 +216,7 @@ impl KeyPickerState {
 /// An acknowledgment screen that can continue to a saved alias.
 #[derive(Debug)]
 pub struct NoticeState {
-    title: String,
+    lang: Lang,
     lines: Vec<String>,
     pub(super) connect_alias: Option<String>,
 }
@@ -211,15 +224,25 @@ pub struct NoticeState {
 impl NoticeState {
     pub(super) fn new(lines: Vec<String>, connect_alias: Option<String>) -> Self {
         Self {
-            title: "Saved settings differ from effective SSH settings".into(),
+            lang: Lang::En,
             lines,
             connect_alias,
         }
     }
 
+    pub(super) fn with_lang(mut self, lang: Lang) -> Self {
+        self.lang = lang;
+        self
+    }
+
+    /// Returns the language of the notice.
+    pub(crate) fn lang(&self) -> Lang {
+        self.lang
+    }
+
     /// Returns the heading of the notice.
     pub fn title(&self) -> &str {
-        &self.title
+        self.lang.text().mismatch_title
     }
 
     /// Returns the individual lines of the notice.

@@ -138,3 +138,20 @@ pub(super) fn clip_cells(value: &str, width: u16) -> Cow<'_, str> {
             .collect(),
     )
 }
+
+/// Clips text and pads it to the requested number of terminal cells.
+pub(super) fn padded_cells(value: &str, width: u16) -> String {
+    let value = clip_cells(value, width);
+    let padding = usize::from(width).saturating_sub(value.width());
+    format!("{value}{}", " ".repeat(padding))
+}
+
+/// Keeps the baseline column width unless a label needs more space.
+pub(super) fn column_width(baseline: u16, labels: impl IntoIterator<Item = &'static str>) -> u16 {
+    let widest = labels
+        .into_iter()
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
+    baseline.max(u16::try_from(widest).unwrap_or(u16::MAX))
+}

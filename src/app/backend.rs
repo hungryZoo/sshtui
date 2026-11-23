@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::config::{ConfigSet, PendingWrite, WriteError, WriteOutcome};
 use crate::dialog::{DialogError, PickOutcome};
+use crate::i18n::{KEY_INSTALL_UNAVAILABLE, PUBLIC_KEY_LOOKUP_UNAVAILABLE};
 use crate::keys::KeyInfo;
 use crate::known_hosts::ForgetPlan;
 use crate::paths::SshPaths;
@@ -35,11 +36,11 @@ pub trait Backend {
     fn discover_keys(&self) -> Vec<KeyInfo>;
     /// Reads the public key that belongs to the key file typed in the form.
     fn read_public_key(&self, _key_file: &str) -> Result<String, String> {
-        Err("public key lookup is unavailable".into())
+        Err(PUBLIC_KEY_LOOKUP_UNAVAILABLE.into())
     }
     /// Runs ssh to install a public key. Returns the ssh exit code.
     fn install_key(&self, _args: &[OsString], _public_key: &str) -> Result<i32, String> {
-        Err("key installation is unavailable".into())
+        Err(KEY_INSTALL_UNAVAILABLE.into())
     }
     /// Returns whether a config file can be changed.
     fn is_writable(&self, path: &Path) -> bool;

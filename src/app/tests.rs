@@ -2947,3 +2947,73 @@ fn installation_is_never_queued_when_a_save_fails_or_an_edit_is_cancelled() {
     assert!(app.take_key_install().is_none());
     assert!(app.backend().installations.borrow().is_empty());
 }
+
+#[test]
+fn korean_status_reports_saved_and_deleted_hosts() {
+    let backend = FakeBackend::new(EDITABLE);
+    let path = backend.paths().config_file().with_extension("backup");
+    let mut app = App::with_lang(backend, Lang::Ko);
+    ch(&mut app, 'e');
+    set_field(&mut app, FormField::User, "bob");
+    key(&mut app, KeyCode::Enter);
+    ch(&mut app, 'y');
+    assert_eq!(
+        status(&app, StatusLevel::Info),
+        format!("web 저장 완료 (백업: {})", path.display())
+    );
+
+    ch(&mut app, 'd');
+    ch(&mut app, 'y');
+    assert_eq!(
+        status(&app, StatusLevel::Info),
+        format!("web 삭제 완료 (백업: {})", path.display())
+    );
+}
+
+#[test]
+fn korean_status_reports_forgotten_and_missing_host_keys() {
+    let (backend, pending) = forget_backend(2);
+    let mut app = App::with_lang(backend, Lang::Ko);
+    key(&mut app, KeyCode::End);
+    ch(&mut app, 'x');
+    ch(&mut app, 'y');
+    assert_eq!(
+        status(&app, StatusLevel::Info),
+        format!(
+            "queue.example.com known_hosts 항목 2개 삭제 완료 (백업: {})",
+            pending.path.with_extension("backup").display()
+        )
+    );
+
+    let backend = FakeBackend::new(HOSTS);
+    backend.set_effective("queue", EffectiveConfig::default());
+    let mut app = App::with_lang(backend, Lang::Ko);
+    key(&mut app, KeyCode::End);
+    ch(&mut app, 'x');
+    let paths = app.backend().paths();
+    let path = paths.abbreviate_home(&known_hosts::file_path(paths));
+    assert_eq!(
+        status(&app, StatusLevel::Info),
+        format!("{path}에 queue 항목 없음")
+    );
+}
+
+#[test]
+fn korean_status_reports_external_changes_and_reload() {
+    let backend = FakeBackend::new(EDITABLE);
+    backend.commit_with(CommitBehavior::Stale);
+    let mut app = App::with_lang(backend, Lang::Ko);
+    ch(&mut app, 'e');
+    set_field(&mut app, FormField::User, "bob");
+    key(&mut app, KeyCode::Enter);
+    ch(&mut app, 'y');
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        format!(
+            "{} 외부 변경 감지, 다시 읽음, 재시도 필요",
+            app.backend().paths().config_file().display()
+        )
+    );
+    ch(&mut app, 'r');
+    assert_eq!(status(&app, StatusLevel::Info), "다시 읽음");
+}

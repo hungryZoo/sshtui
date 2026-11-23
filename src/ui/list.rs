@@ -6,52 +6,46 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, ClickTarget, HostRow};
 
-use super::layout::{below, left, put, render_lines, right_of, row, rule, visible_rows};
+use super::layout::{
+    below, column_width, left, put, render_lines, right_of, row, rule, visible_rows,
+};
 use super::theme::{PLAIN, ROW, bold};
 use super::{
-    HitMap, HoverFrame, HoverKey, KeyHint, KeyHints, Theme, command_lines, headline, input_window,
+    HitMap, HoverFrame, HoverKey, KeyHints, Theme, command_lines, headline, input_window,
     intensity, labeled_lines, styled_wrapped,
 };
 
-const fn list_hints(enter: &'static str, escape: &'static str) -> [KeyHint; 7] {
-    [
-        ("enter", enter, Some(KeyCode::Enter)),
-        ("e", "edit", Some(KeyCode::Char('e'))),
-        ("d", "delete", Some(KeyCode::Char('d'))),
-        ("x", "forget(known_host)", Some(KeyCode::Char('x'))),
-        ("/", "filter", Some(KeyCode::Char('/'))),
-        ("r", "reload", Some(KeyCode::Char('r'))),
-        ("esc", escape, Some(KeyCode::Esc)),
-    ]
-}
-
 pub(super) fn help<B: Backend>(app: &App<B>) -> KeyHints {
-    const CONNECT: &[KeyHint] = &list_hints("connect", "quit");
-    const CONNECT_FILTERED: &[KeyHint] = &list_hints("connect", "clear filter");
-    const NEW: &[KeyHint] = &list_hints("new", "quit");
-    const NEW_FILTERED: &[KeyHint] = &list_hints("new", "clear filter");
-
+    let text = app.lang().text();
     if app.is_filtering() {
-        (
+        return (
             true,
-            &[
-                ("enter", "apply filter", Some(KeyCode::Enter)),
-                ("↑↓", "select", None),
-                ("esc", "clear filter", Some(KeyCode::Esc)),
+            vec![
+                ("enter", text.apply_filter, Some(KeyCode::Enter)),
+                ("↑↓", text.select, None),
+                ("esc", text.clear_filter, Some(KeyCode::Esc)),
             ],
-        )
-    } else {
-        let new = app.new_row_selected();
-        (
-            new || app.selection().is_some(),
-            match (new, app.filter().value().is_empty()) {
-                (true, true) => NEW,
-                (true, false) => NEW_FILTERED,
-                (false, true) => CONNECT,
-                (false, false) => CONNECT_FILTERED,
-            },
-        )
+        );
     }
+    let new = app.new_row_selected();
+    let enter = if new { text.new } else { text.connect };
+    let escape = if app.filter().value().is_empty() {
+        text.quit
+    } else {
+        text.clear_filter
+    };
+    (
+        new || app.selection().is_some(),
+        vec![
+            ("enter", enter, Some(KeyCode::Enter)),
+            ("e", text.edit, Some(KeyCode::Char('e'))),
+            ("d", text.delete, Some(KeyCode::Char('d'))),
+            ("x", text.forget_known_host, Some(KeyCode::Char('x'))),
+            ("/", text.filter, Some(KeyCode::Char('/'))),
+            ("r", text.reload, Some(KeyCode::Char('r'))),
+            ("esc", escape, Some(KeyCode::Esc)),
+        ],
+    )
 }
 
 pub(super) fn header<B: Backend>(
@@ -62,19 +56,17 @@ pub(super) fn header<B: Backend>(
     hits: &mut HitMap,
     hover: HoverFrame<'_>,
 ) {
-    let total = app.host_count();
-    let title = if app.is_filtering() || !app.filter().value().is_empty() {
-        format!("{} of {total} hosts", app.filtered_hosts().len())
-    } else {
-        format!("{total} hosts")
-    };
+    let lang = app.lang();
+    let matched = (app.is_filtering() || !app.filter().value().is_empty())
+        .then(|| app.filtered_hosts().len());
+    let title = lang.hosts(app.host_count(), matched);
     let line = headline(title, theme.muted, theme);
     let min_offset = line.width() + 2;
     let mut end = area.width;
     if app.update_plan().is_some() {
         let t = intensity(hover, HoverKey::UpdateNotice);
         let notice = Line::from(vec![
-            Span::styled("update available ", theme.warn),
+            Span::styled(lang.text().update_available, theme.warn),
             Span::styled("u", bold(theme.warn)),
         ])
         .style(theme.hover_text(theme.hover_background(PLAIN, ROW, t), t));
@@ -89,11 +81,7 @@ pub(super) fn header<B: Backend>(
     }
     let count = app.suggestions().len();
     if count > 0 {
-        let label = if count == 1 {
-            "1 suggestion ".into()
-        } else {
-            format!("{count} suggestions ")
-        };
+        let label = format!("{} ", lang.suggestions(count));
         let key = KeyCode::Char('i');
         let t = intensity(hover, HoverKey::Key(key));
         let notice = Line::from(vec![
@@ -148,13 +136,18 @@ pub(super) fn render<B: Backend>(
         {
             render_detail(frame, app, host, detail, theme);
         } else if app.new_row_selected() {
-            put(frame, row(detail, 0), "New connection", bold(theme.text));
+            put(
+                frame,
+                row(detail, 0),
+                app.lang().text().new_connection,
+                bold(theme.text),
+            );
             let description = below(detail, 1);
             render_lines(
                 frame,
                 description,
                 styled_wrapped(
-                    "Add a host or connect once without saving.",
+                    app.lang().text().new_description,
                     description.width,
                     description.height,
                     theme.muted,
@@ -193,7 +186,7 @@ fn render_filter<B: Backend>(
     let input = right_of(area, 3);
     let (value, column, _) = input_window(app.filter(), input.width, filtering);
     if !filtering && value.is_empty() {
-        put(frame, input, "filter hosts", theme.muted);
+        put(frame, input, app.lang().text().filter_hosts, theme.muted);
     } else {
         put(frame, input, value, theme.text);
     }
@@ -213,6 +206,7 @@ fn render_hosts<B: Backend>(
     hits: &mut HitMap,
     hover: HoverFrame<'_>,
 ) {
+    let text = app.lang().text();
     let hosts = app.filtered_hosts();
     let new_index = hosts.len().max(1);
     let name_width = app
@@ -235,7 +229,7 @@ fn render_hosts<B: Backend>(
         if index == new_index {
             let t = intensity(hover, HoverKey::NewRow);
             render_row_selection(frame, rect, selected, t, theme);
-            let label = "+ New connection";
+            let label = text.new_row;
             let (name, summary) = row_columns(rect, name_width);
             put(
                 frame,
@@ -254,10 +248,18 @@ fn render_hosts<B: Backend>(
         } else if let Some(host) = hosts.next() {
             let t = intensity(hover, HoverKey::HostRow(index));
             render_row_selection(frame, rect, selected, t, theme);
-            render_host(frame, rect, host, (selected, t), name_width, &filter, theme);
+            render_host(
+                frame,
+                row_columns(rect, name_width),
+                host,
+                (selected, t),
+                text.read_only,
+                &filter,
+                theme,
+            );
             hits.add(rect, ClickTarget::HostRow(index));
         } else {
-            put(frame, rect, "No matching hosts", theme.muted);
+            put(frame, rect, text.no_matching_hosts, theme.muted);
         }
     }
 }
@@ -283,16 +285,14 @@ fn row_columns(area: Rect, name_width: u16) -> (Rect, Rect) {
 
 fn render_host(
     frame: &mut Frame,
-    area: Rect,
+    (names, summary): (Rect, Rect),
     host: HostRow<'_>,
     (selected, t): (bool, f32),
-    name_width: u16,
+    readonly: &str,
     filter: &str,
     theme: &Theme,
 ) {
-    let (names, summary) = row_columns(area, name_width);
-    let readonly = "read-only";
-    let width = readonly.len() as u16;
+    let width = readonly.width() as u16;
     let marker_width = if host.read_only && summary.width >= width {
         width
     } else {
@@ -385,6 +385,18 @@ fn render_detail<B: Backend>(
     if area.is_empty() {
         return;
     }
+    let lang = app.lang();
+    let text = lang.text();
+    let label_width = column_width(
+        11,
+        [
+            text.user,
+            text.address,
+            text.port,
+            text.key_file,
+            text.source,
+        ],
+    );
     put(frame, row(area, 0), &host.entry.name, bold(theme.text));
     let mut content = below(area, 3);
     match app.selected_effective() {
@@ -396,30 +408,30 @@ fn render_detail<B: Backend>(
                 .map_or_else(|| address.to_owned(), |user| format!("{user}@{address}"));
             put(frame, row(area, 1), &destination, theme.muted);
             for (label, value) in [
-                ("User", config.user.as_deref().unwrap_or("-")),
-                ("Address", address),
-                ("Port", config.port.as_deref().unwrap_or("-")),
+                (text.user, config.user.as_deref().unwrap_or("-")),
+                (text.address, address),
+                (text.port, config.port.as_deref().unwrap_or("-")),
             ] {
-                content = detail_value(frame, content, label, value, theme);
+                content = detail_value(frame, content, label_width, label, value, theme);
             }
             if config.identity_files.is_empty() {
-                content = detail_value(frame, content, "Key file", "-", theme);
+                content = detail_value(frame, content, label_width, text.key_file, "-", theme);
             }
             for (index, file) in config.identity_files.iter().enumerate() {
                 if content.is_empty() {
                     break;
                 }
-                let label = if index == 0 { "Key file" } else { "" };
+                let label = if index == 0 { text.key_file } else { "" };
                 let file = app
                     .backend()
                     .paths()
                     .abbreviate_home(std::path::Path::new(file));
-                content = detail_value(frame, content, label, &file, theme);
+                content = detail_value(frame, content, label_width, label, &file, theme);
             }
         }
         Some(Err(error)) => {
             let lines = styled_wrapped(
-                &format!("Effective settings: {error}"),
+                &lang.effective_settings(error),
                 content.width,
                 content.height,
                 theme.error,
@@ -431,16 +443,16 @@ fn render_detail<B: Backend>(
 
     let path = app.backend().paths().abbreviate_home(&host.entry.source);
     let source = format!("{path}:{}", host.entry.line_number);
-    content = detail_value(frame, content, "Source", &source, theme);
+    content = detail_value(frame, content, label_width, text.source, &source, theme);
     if host.read_only {
-        put(frame, row(content, 0), "Read-only file", theme.warn);
+        put(frame, row(content, 0), text.read_only_file, theme.warn);
         content = below(content, 1);
     }
     if !app.is_filtering()
         && !theme.dim
         && let Some(command) = app.selected_command()
     {
-        put(frame, row(content, 1), "enter runs", theme.muted);
+        put(frame, row(content, 1), text.enter_runs, theme.muted);
         let preview = below(content, 2);
         render_lines(
             frame,
@@ -450,10 +462,17 @@ fn render_detail<B: Backend>(
     }
 }
 
-fn detail_value(frame: &mut Frame, area: Rect, label: &str, value: &str, theme: &Theme) -> Rect {
+fn detail_value(
+    frame: &mut Frame,
+    area: Rect,
+    label_width: u16,
+    label: &str,
+    value: &str,
+    theme: &Theme,
+) -> Rect {
     render_lines(
         frame,
         area,
-        labeled_lines(label, value, area.width, 11, area.height, theme),
+        labeled_lines(label, value, area.width, label_width, area.height, theme),
     )
 }

@@ -1,16 +1,23 @@
 //! State for the update confirmation overlay.
 
+use crate::i18n::Lang;
 use crate::update::{InstallMethod, UpdatePlan, latest_url};
 
 /// An available update awaiting confirmation.
 #[derive(Debug)]
 pub struct UpdateState {
     pub(super) plan: UpdatePlan,
+    lang: Lang,
 }
 
 impl UpdateState {
-    pub(super) fn new(plan: UpdatePlan) -> Self {
-        Self { plan }
+    pub(super) fn new(plan: UpdatePlan, lang: Lang) -> Self {
+        Self { plan, lang }
+    }
+
+    /// Returns the language of the update overlay.
+    pub(crate) fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// Returns the running version.
@@ -25,7 +32,7 @@ impl UpdateState {
 
     /// Returns the label of the detected installation method.
     pub fn method_description(&self) -> String {
-        self.plan.method.describe()
+        self.lang.install_method(&self.plan.method)
     }
 
     /// Returns the upgrade commands formatted for display.

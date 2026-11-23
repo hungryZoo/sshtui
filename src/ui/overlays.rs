@@ -6,16 +6,15 @@ use ratatui::widgets::{Block, BorderType, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    ClickTarget, ConfirmChoice, ConfirmKind, ConfirmState, ImportState, KeyPickerState,
-    NoticeState, UpdateState,
+    App, Backend, ClickTarget, ConfirmChoice, ConfirmKind, ConfirmState, ImportState,
+    KeyPickerState, NoticeState, UpdateState,
 };
 use crate::config::{DiffHunk, DiffLine, DiffTag, backup_file_name};
-use crate::history::Suggestion;
 use crate::paths::SshPaths;
 
 use super::layout::{
-    below, clip_cells, header_line, inset, left, put, put_right, render_lines, right_of, row, rule,
-    visible_rows,
+    below, clip_cells, column_width, header_line, inset, left, padded_cells, put, put_right,
+    render_lines, right_of, row, rule, visible_rows,
 };
 use super::theme::bold;
 use super::{
@@ -25,32 +24,30 @@ use super::{
 
 const POPUP_WIDTH: u16 = 60;
 
-pub(super) fn confirm_help(state: &ConfirmState) -> &'static [KeyHint] {
-    const CANCEL_DELETE: &[KeyHint] = &destructive_help("cancel", "delete");
-    const DELETE: &[KeyHint] = &destructive_help("delete", "delete");
-    const CANCEL_FORGET: &[KeyHint] = &destructive_help("cancel", "forget");
-    const FORGET: &[KeyHint] = &destructive_help("forget", "forget");
-
-    match (state.kind(), state.choice()) {
-        (ConfirmKind::Delete, Some(ConfirmChoice::Cancel)) => CANCEL_DELETE,
-        (ConfirmKind::Delete, _) => DELETE,
-        (ConfirmKind::Forget, Some(ConfirmChoice::Cancel)) => CANCEL_FORGET,
-        (ConfirmKind::Forget, _) => FORGET,
-        (ConfirmKind::Save, _) => &[
-            ("y", "save", Some(KeyCode::Char('y'))),
-            ("n", "back to form", Some(KeyCode::Char('n'))),
-            ("↑↓", "scroll", None),
-        ],
-    }
-}
-
-const fn destructive_help(enter: &'static str, proceed: &'static str) -> [KeyHint; 5] {
-    [
+pub(super) fn confirm_help(state: &ConfirmState) -> Vec<KeyHint> {
+    let text = state.lang().text();
+    let proceed = match state.kind() {
+        ConfirmKind::Delete => text.delete,
+        ConfirmKind::Forget => text.forget,
+        ConfirmKind::Save => {
+            return vec![
+                ("y", text.save, Some(KeyCode::Char('y'))),
+                ("n", text.back_to_form, Some(KeyCode::Char('n'))),
+                ("↑↓", text.scroll, None),
+            ];
+        }
+    };
+    let enter = if state.choice() == Some(ConfirmChoice::Cancel) {
+        text.cancel
+    } else {
+        proceed
+    };
+    vec![
         ("enter", enter, Some(KeyCode::Enter)),
-        ("←→", "choose", None),
+        ("←→", text.choose, None),
         ("y", proceed, Some(KeyCode::Char('y'))),
-        ("n", "back to list", Some(KeyCode::Char('n'))),
-        ("↑↓", "scroll", None),
+        ("n", text.back_to_list, Some(KeyCode::Char('n'))),
+        ("↑↓", text.scroll, None),
     ]
 }
 
@@ -62,17 +59,27 @@ pub(super) fn confirm(
     theme: &Theme,
     hits: &mut HitMap,
 ) {
+    let lang = state.lang();
+    let text = lang.text();
     if let (Some(choice), Some(question)) = (
         state.choice(),
         state.question(&paths.abbreviate_home(state.path())),
     ) {
         let area = row(body, body.height.saturating_sub(1));
         let proceed = if state.kind() == ConfirmKind::Forget {
-            "Forget"
+            text.forget_choice
         } else {
-            "Delete"
+            text.delete_choice
         };
-        render_question(frame, area, &question, proceed, choice, theme, hits);
+        render_question(
+            frame,
+            area,
+            &question,
+            (text.cancel_choice, proceed),
+            choice,
+            theme,
+            hits,
+        );
         body.height = body.height.saturating_sub(1);
     }
     rule(frame, row(body, 0), theme.rule);
@@ -87,10 +94,8 @@ pub(super) fn confirm(
     }
     let count = added.max(removed);
     let summary_text = match state.forget_name() {
-        Some(name) if removed == 1 => format!("1 entry for {name} will be removed"),
-        Some(name) => format!("{removed} entries for {name} will be removed"),
-        None if count == 1 => "1 line will change".into(),
-        None => format!("{count} lines will change"),
+        Some(name) => lang.entries_to_remove(removed, name),
+        None => lang.lines_changed(count),
     };
     let mut summary = Line::from(Span::styled(summary_text, theme.text));
     if removed > 0 {
@@ -111,7 +116,7 @@ pub(super) fn confirm(
         put(
             frame,
             row(body, body.height.saturating_sub(1)),
-            &format!("The current file is kept as {backup}"),
+            &lang.current_file_backup(&backup),
             theme.muted,
         );
     }
@@ -122,14 +127,13 @@ fn render_question(
     frame: &mut Frame,
     area: Rect,
     question: &str,
-    proceed: &str,
+    (cancel, proceed): (&str, &str),
     choice: ConfirmChoice,
     theme: &Theme,
     hits: &mut HitMap,
 ) {
     const GAP: u16 = 3;
-    const CANCEL: &str = "Cancel";
-    let labels_width = (CANCEL.width() + proceed.width()) as u16;
+    let labels_width = (cancel.width() + proceed.width()) as u16;
     let padding = u16::from(area.width >= labels_width + 2);
     let choices_width = labels_width + 2 * padding;
     let choice_gap = area.width.saturating_sub(choices_width).min(GAP);
@@ -140,7 +144,7 @@ fn render_question(
     let mut buttons = right_of(area, prompt_width + if prompt_width == 0 { 0 } else { GAP });
     let badge = theme.badge(true);
     for (answer, label, code, highlight) in [
-        (ConfirmChoice::Cancel, CANCEL, 'n', badge),
+        (ConfirmChoice::Cancel, cancel, 'n', badge),
         (
             ConfirmChoice::Proceed,
             proceed,
@@ -226,14 +230,12 @@ pub(super) fn key_picker(
     theme: &Theme,
     hits: &mut HitMap,
     hover: HoverFrame<'_>,
-) -> &'static [KeyHint] {
+) -> Vec<KeyHint> {
+    let lang = state.lang();
+    let text = lang.text();
     let count = state.keys().len();
     let directory = paths.abbreviate_home(paths.ssh_dir());
-    let count_text = if count == 1 {
-        format!("1 key in {directory}")
-    } else {
-        format!("{count} keys in {directory}")
-    };
+    let count_text = lang.keys_in_directory(count, &directory);
     let area = popup(
         frame,
         body,
@@ -242,7 +244,7 @@ pub(super) fn key_picker(
         theme,
         hits,
     );
-    popup_heading(frame, area, "Select a key file", &count_text, theme);
+    popup_heading(frame, area, text.key_picker, &count_text, theme);
     let selection = state.selection();
     for (index, rect) in visible_rows(below(area, 2), count, Some(selection)) {
         let key = &state.keys()[index];
@@ -289,30 +291,32 @@ pub(super) fn key_picker(
         }
         hits.add(rect, ClickTarget::KeyRow(index));
     }
-    &[
-        ("enter", "use this key", Some(KeyCode::Enter)),
-        ("↑↓", "select", None),
-        ("esc", "cancel", Some(KeyCode::Esc)),
+    vec![
+        ("enter", text.use_key, Some(KeyCode::Enter)),
+        ("↑↓", text.select, None),
+        ("esc", text.cancel, Some(KeyCode::Esc)),
     ]
 }
 
-pub(super) fn import(
+pub(super) fn import<B: Backend>(
     frame: &mut Frame,
     state: &ImportState,
-    suggestions: &[Suggestion],
+    app: &App<B>,
     body: Rect,
     theme: &Theme,
     hits: &mut HitMap,
     hover: HoverFrame<'_>,
-) -> &'static [KeyHint] {
-    const GUIDANCE: &str = "Pick one to open the new connection form with these values.";
+) -> Vec<KeyHint> {
     const MAX_ROWS: usize = 10;
 
+    let lang = app.lang();
+    let text = lang.text();
+    let suggestions = app.suggestions();
     let count = suggestions.len();
     let area = popup(
         frame,
         body,
-        GUIDANCE.len() as u16 + 6,
+        POPUP_WIDTH.max(text.import_guidance.width() as u16 + 6),
         count.min(MAX_ROWS) + 3,
         theme,
         hits,
@@ -320,8 +324,8 @@ pub(super) fn import(
     popup_heading(
         frame,
         area,
-        "Import from shell history",
-        &format!("{count} found"),
+        text.import_history,
+        &lang.import_found(count),
         theme,
     );
     let mut rows = below(area, 2);
@@ -380,11 +384,16 @@ pub(super) fn import(
         put_right(frame, right_of(content, count_offset), &occurrences, muted);
         hits.add(rect, ClickTarget::SuggestionRow(index));
     }
-    put(frame, row(area, 2 + rows.height), GUIDANCE, theme.muted);
-    &[
-        ("enter", "fill form", Some(KeyCode::Enter)),
-        ("↑↓", "select", None),
-        ("esc", "close", Some(KeyCode::Esc)),
+    put(
+        frame,
+        row(area, 2 + rows.height),
+        text.import_guidance,
+        theme.muted,
+    );
+    vec![
+        ("enter", text.fill_form, Some(KeyCode::Enter)),
+        ("↑↓", text.select, None),
+        ("esc", text.close, Some(KeyCode::Esc)),
     ]
 }
 
@@ -394,7 +403,8 @@ pub(super) fn notice(
     body: Rect,
     theme: &Theme,
     hits: &mut HitMap,
-) -> &'static [KeyHint] {
+) -> Vec<KeyHint> {
+    let text = state.lang().text();
     let width = popup_content_width(body);
     let lines = styled_wrapped(&state.lines().join("\n"), width, body.height, theme.warn);
     let area = popup(
@@ -408,12 +418,12 @@ pub(super) fn notice(
     popup_heading(frame, area, state.title(), "", theme);
     render_lines(frame, below(area, 2), lines);
     if state.connects() {
-        &[
-            ("enter", "connect anyway", Some(KeyCode::Enter)),
-            ("esc", "back to list", Some(KeyCode::Esc)),
+        vec![
+            ("enter", text.connect_anyway, Some(KeyCode::Enter)),
+            ("esc", text.back_to_list, Some(KeyCode::Esc)),
         ]
     } else {
-        &[("enter", "ok", Some(KeyCode::Enter))]
+        vec![("enter", text.ok, Some(KeyCode::Enter))]
     }
 }
 
@@ -423,11 +433,13 @@ pub(super) fn update(
     body: Rect,
     theme: &Theme,
     hits: &mut HitMap,
-) -> &'static [KeyHint] {
+) -> Vec<KeyHint> {
+    let text = state.lang().text();
     let width = popup_content_width(body);
-    let label_width = 15.min(width.saturating_sub(1));
+    let label_width = column_width(15, [text.installed_via, text.command, text.download])
+        .min(width.saturating_sub(1));
     let mut lines = labeled_lines(
-        "Installed via",
+        text.installed_via,
         &state.method_description(),
         width,
         label_width,
@@ -444,26 +456,20 @@ pub(super) fn update(
             );
             for (index, mut line) in command.into_iter().enumerate() {
                 let label = if step == 0 && index == 0 {
-                    "Command"
+                    text.command
                 } else {
                     ""
                 };
                 line.spans.insert(
                     0,
-                    Span::styled(
-                        format!(
-                            "{label:<label_width$}",
-                            label_width = usize::from(label_width)
-                        ),
-                        theme.muted,
-                    ),
+                    Span::styled(padded_cells(label, label_width), theme.muted),
                 );
                 lines.push(line);
             }
         }
     } else {
         lines.extend(labeled_lines(
-            "Download",
+            text.download,
             &state.release_url(),
             width,
             label_width,
@@ -480,15 +486,15 @@ pub(super) fn update(
         hits,
     );
     let versions = format!("{} → {}", state.current(), state.latest());
-    popup_heading(frame, area, "Update sshtui", &versions, theme);
+    popup_heading(frame, area, text.update_title, &versions, theme);
     render_lines(frame, below(area, 2), lines);
     if state.can_run() {
-        &[
-            ("enter", "update and exit", Some(KeyCode::Enter)),
-            ("esc", "cancel", Some(KeyCode::Esc)),
+        vec![
+            ("enter", text.update_and_exit, Some(KeyCode::Enter)),
+            ("esc", text.cancel, Some(KeyCode::Esc)),
         ]
     } else {
-        &[("esc", "close", Some(KeyCode::Esc))]
+        vec![("esc", text.close, Some(KeyCode::Esc))]
     }
 }
 

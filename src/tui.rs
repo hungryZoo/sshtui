@@ -18,6 +18,7 @@ use crossterm::terminal::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::app::{App, Backend, ClickTarget, Exit, KeyInstall};
+use crate::i18n::Lang;
 use crate::ui::{self, ColorMode, HitMap, Hover, Theme};
 
 // The terminal and panic hook both belong to the process.
@@ -158,7 +159,7 @@ fn run_loop<B: Backend>(
         }
         if let Some(install) = app.take_key_install() {
             session.suspend(true)?;
-            let result = run_key_install(app.backend(), &install)?;
+            let result = run_key_install(app.backend(), &install, app.lang())?;
             session.resume(options.mouse)?;
             mouse = options.mouse.then(MouseState::default);
             terminal.clear()?;
@@ -176,23 +177,21 @@ fn run_loop<B: Backend>(
 fn run_key_install<B: Backend>(
     backend: &B,
     install: &KeyInstall,
+    lang: Lang,
 ) -> io::Result<Result<i32, String>> {
     let mut output = stdout();
-    writeln!(
-        output,
-        "sshtui: installing the public key on {}",
-        install.label
-    )?;
-    writeln!(output, "sshtui: the server may ask for your password")?;
+    let text = lang.text();
+    writeln!(output, "{}", lang.key_install_started(&install.label))?;
+    writeln!(output, "{}", text.server_password_prompt)?;
     output.flush()?;
     let result = backend.install_key(&install.args, &install.public_key);
     let message = if matches!(result, Ok(0)) {
-        "sshtui: key install finished"
+        text.key_install_finished
     } else {
-        "sshtui: key install failed"
+        text.key_install_failed
     };
     writeln!(output, "{message}")?;
-    writeln!(output, "Press Enter to return to sshtui.")?;
+    writeln!(output, "{}", text.return_after_install)?;
     output.flush()?;
     io::stdin().read_line(&mut String::new())?;
     Ok(result)

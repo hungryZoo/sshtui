@@ -6,6 +6,7 @@ use crate::config::{
     BlockFields, Change, FieldState, HostEntry, NewHost, OptionChanges, OptionKey,
 };
 use crate::history::SshInvocation;
+use crate::i18n::Lang;
 use crate::keys::KeyInfo;
 use crate::paths::SshPaths;
 use crate::ssh::args::ConnectTarget;
@@ -231,12 +232,15 @@ impl FormState {
 
     /// Describes how edits to a shared Host block affect the other patterns.
     pub fn shared_notice(&self) -> Option<String> {
+        self.localized_shared_notice(Lang::En)
+    }
+
+    /// Returns the shared block notice in the requested language.
+    pub(crate) fn localized_shared_notice(&self, lang: Lang) -> Option<String> {
         match &self.kind {
-            FormKind::Edit { entry, .. } if !entry.siblings.is_empty() => Some(format!(
-                "Option changes also apply to {}. Renaming affects only {}.",
-                entry.siblings.join(", "),
-                entry.name
-            )),
+            FormKind::Edit { entry, .. } if !entry.siblings.is_empty() => {
+                Some(lang.shared_options(&entry.siblings.join(", "), &entry.name))
+            }
             _ => None,
         }
     }

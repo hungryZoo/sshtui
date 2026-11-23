@@ -9,7 +9,6 @@ mod list;
 mod update;
 
 use std::ffi::OsString;
-use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -18,6 +17,7 @@ use crate::config::{
 };
 use crate::dialog::PickOutcome;
 use crate::history::Suggestion;
+use crate::i18n::Lang;
 use crate::known_hosts;
 use crate::ssh::args::{ArgsError, ConnectTarget, config_file_args, connect_args, preview};
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig, find_mismatches};
@@ -35,7 +35,7 @@ pub use self::update::UpdateState;
 
 use self::confirm::ConfirmAction;
 use self::input::{is_ctrl, is_plain};
-use self::list::{ListState, describe_warning};
+use self::list::ListState;
 
 /// Why the event loop should stop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +132,7 @@ pub enum Mode {
 /// Application state and the side effects available to it.
 pub struct App<B: Backend> {
     backend: B,
+    lang: Lang,
     config: ConfigSet,
     history_commands: Vec<String>,
     suggestions: Vec<Suggestion>,
@@ -148,10 +149,16 @@ impl<B: Backend> App<B> {
     /// Loads the configuration and selects the last connected host when available.
     /// With no hosts or history suggestions the app starts on the new-connection form.
     pub fn new(backend: B) -> Self {
+        Self::with_lang(backend, Lang::En)
+    }
+
+    /// Loads the application using the specified display language.
+    pub fn with_lang(backend: B, lang: Lang) -> Self {
         let mut app = Self {
             update_plan: backend.update_plan(),
             history_commands: backend.recent_ssh_commands(),
             backend,
+            lang,
             config: ConfigSet::default(),
             suggestions: Vec::new(),
             list: ListState::default(),
@@ -301,10 +308,8 @@ impl<B: Backend> App<B> {
         };
         let error = match result {
             Ok(0) => None,
-            Ok(code) => Some(format!(
-                "Key install failed for {label} (ssh exit code {code})"
-            )),
-            Err(error) => Some(format!("Key install failed for {label}: {error}")),
+            Ok(code) => Some(self.lang.key_install_exit(&label, code)),
+            Err(error) => Some(self.lang.key_install_error(&label, &error)),
         };
         if let Some(error) = error {
             if matches!(after, KeyInstallAfter::Add) {
@@ -333,10 +338,7 @@ impl<B: Backend> App<B> {
                 }
             }
             KeyInstallAfter::Edit(expected) => {
-                self.set_status(
-                    StatusLevel::Info,
-                    format!("Installed the public key on {label}"),
-                );
+                self.set_status(StatusLevel::Info, self.lang.key_installed(&label));
                 self.mode = self.edit_result(&label, &expected);
             }
         }
@@ -373,6 +375,11 @@ impl<B: Backend> App<B> {
     /// Returns the unsaved shell history destinations, newest first.
     pub fn suggestions(&self) -> &[Suggestion] {
         &self.suggestions
+    }
+
+    /// Returns the language used for display.
+    pub fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// Returns the backend used by this application.
@@ -467,7 +474,7 @@ impl<B: Backend> App<B> {
     ) -> Option<Result<String, String>> {
         let form = self.form()?;
         Some(match form.first_error(&self.config.hosts) {
-            Some((_, error)) => Err(error.to_string()),
+            Some((_, error)) => Err(self.lang.validation_error(&error)),
             None => args(&form.target())
                 .map(|args| preview(&args))
                 .map_err(|error| error.to_string()),
@@ -495,11 +502,7 @@ impl<B: Backend> App<B> {
                 if let Some(first) = config.warnings.first() {
                     self.set_status(
                         StatusLevel::Warning,
-                        format!(
-                            "{} ({} warnings total)",
-                            describe_warning(first),
-                            config.warnings.len()
-                        ),
+                        self.lang.warning_count(first, config.warnings.len()),
                     );
                 }
                 config
@@ -594,7 +597,7 @@ impl<B: Backend> App<B> {
             KeyCode::Char('r') => {
                 self.reload_selected();
                 if self.status.is_none() {
-                    self.set_status(StatusLevel::Info, "Reloaded");
+                    self.set_status(StatusLevel::Info, self.lang.text().reloaded);
                 }
                 return Mode::List;
             }
@@ -604,19 +607,15 @@ impl<B: Backend> App<B> {
             KeyCode::Esc | KeyCode::Char('q') => self.exit = Some(Exit::Quit),
             KeyCode::Char('i') => {
                 if self.suggestions.is_empty() {
-                    self.set_status(
-                        StatusLevel::Info,
-                        "No new ssh destinations in shell history",
-                    );
+                    self.set_status(StatusLevel::Info, self.lang.text().no_history_suggestions);
                     return Mode::List;
                 }
                 return Mode::Import(ImportState::default());
             }
             KeyCode::Char('u') => {
-                return self
-                    .update_plan
-                    .clone()
-                    .map_or(Mode::List, |plan| Mode::Update(UpdateState::new(plan)));
+                return self.update_plan.clone().map_or(Mode::List, |plan| {
+                    Mode::Update(UpdateState::new(plan, self.lang))
+                });
             }
             _ => {}
         }
@@ -643,7 +642,7 @@ impl<B: Backend> App<B> {
         if self.list.is_read_only(entry) {
             self.set_status(
                 StatusLevel::Warning,
-                format!("{} is read-only", entry.source.display()),
+                self.lang.path_read_only(&entry.source),
             );
             return None;
         }
@@ -659,10 +658,7 @@ impl<B: Backend> App<B> {
             return Mode::List;
         };
         let Some(file) = self.config.files.get(entry.file_index) else {
-            self.set_status(
-                StatusLevel::Error,
-                format!("Cannot find the config file for {}", entry.name),
-            );
+            self.set_status(StatusLevel::Error, self.lang.missing_config(&entry.name));
             return Mode::List;
         };
         match block_fields(&file.parsed, entry.block_index) {
@@ -689,6 +685,7 @@ impl<B: Backend> App<B> {
         };
         match plan_delete(&self.config, &entry) {
             Ok(pending) => Mode::Confirm(ConfirmState::new(
+                self.lang,
                 pending,
                 entry.name,
                 ConfirmAction::Delete,
@@ -708,13 +705,14 @@ impl<B: Backend> App<B> {
         let name = match self.list.effective(&self.backend, &alias) {
             Ok(effective) => known_hosts::lookup_name_for(&alias, effective),
             Err(error) => {
-                let message = format!("Cannot resolve {alias}: {error}");
+                let message = self.lang.cannot_resolve(&alias, error);
                 self.set_status(StatusLevel::Error, message);
                 return Mode::List;
             }
         };
         match self.backend.plan_forget(&name) {
             Ok(Some(plan)) => Mode::Confirm(ConfirmState::new(
+                self.lang,
                 plan.pending,
                 alias,
                 ConfirmAction::Forget {
@@ -725,7 +723,10 @@ impl<B: Backend> App<B> {
             Ok(None) => {
                 let paths = self.backend.paths();
                 let path = paths.abbreviate_home(&known_hosts::file_path(paths));
-                self.set_status(StatusLevel::Info, format!("No entry for {name} in {path}"));
+                self.set_status(
+                    StatusLevel::Info,
+                    self.lang.no_known_host_entry(&name, &path),
+                );
                 Mode::List
             }
             Err(error) => {
@@ -739,14 +740,11 @@ impl<B: Backend> App<B> {
         if is_ctrl(key, 'l') || (is_plain(key) && key.code == KeyCode::F(2)) {
             let keys = self.backend.discover_keys();
             if !keys.is_empty() {
-                return Mode::KeyPicker(KeyPickerState::new(form, keys));
+                return Mode::KeyPicker(KeyPickerState::new(form, keys, self.lang));
             }
             self.set_status(
                 StatusLevel::Warning,
-                format!(
-                    "No private keys found in {}",
-                    self.backend.paths().ssh_dir().display()
-                ),
+                self.lang.no_private_keys(self.backend.paths().ssh_dir()),
             );
         } else if is_ctrl(key, 'o') || (is_plain(key) && key.code == KeyCode::F(3)) {
             self.browse(&mut form);
@@ -795,14 +793,14 @@ impl<B: Backend> App<B> {
     fn submit(&mut self, mut form: FormState) -> Mode {
         if let Some((field, error)) = form.first_error(&self.config.hosts) {
             form.set_focus(field);
-            self.set_status(StatusLevel::Error, error.to_string());
+            self.set_status(StatusLevel::Error, self.lang.validation_error(&error));
             return Mode::Form(form);
         }
 
         let public_key = if form.is_checked(FormField::InstallKey) {
             let result = form
                 .install_key_file()
-                .ok_or_else(|| "Key login needs a key file".into())
+                .ok_or_else(|| self.lang.text().needs_key_file.into())
                 .and_then(|path| self.backend.read_public_key(path));
             match result {
                 Ok(key) => Some(key),
@@ -849,11 +847,12 @@ impl<B: Backend> App<B> {
                         if let Some(install) = install {
                             self.queue_key_install(install, KeyInstallAfter::Edit(form.expected()));
                         } else {
-                            self.set_status(StatusLevel::Info, "No changes");
+                            self.set_status(StatusLevel::Info, self.lang.text().no_changes);
                         }
                         Mode::List
                     }
                     Ok(pending) => Mode::Confirm(ConfirmState::new(
+                        self.lang,
                         pending,
                         nickname.to_owned(),
                         ConfirmAction::Edit {
@@ -918,13 +917,7 @@ impl<B: Backend> App<B> {
             }
             Err(WriteError::Stale { path }) => {
                 self.reload_selected();
-                self.set_status(
-                    StatusLevel::Error,
-                    format!(
-                        "{} was changed by another program; reloaded, press Enter to retry",
-                        path.display()
-                    ),
-                );
+                self.set_status(StatusLevel::Error, self.lang.stale_add(&path));
                 Mode::Form(form)
             }
             Err(error) => {
@@ -940,7 +933,7 @@ impl<B: Backend> App<B> {
             self.connect(ConnectTarget::Alias(alias));
             Mode::Form(form)
         } else {
-            Mode::Notice(NoticeState::new(mismatches, Some(alias)))
+            Mode::Notice(NoticeState::new(mismatches, Some(alias)).with_lang(self.lang))
         }
     }
 
@@ -980,9 +973,9 @@ impl<B: Backend> App<B> {
             ..
         } = confirm;
         let result = self.backend.commit(&pending);
-        let (verb, edit) = match action {
-            ConfirmAction::Edit { form, install } => ("Saved", Some((form, install))),
-            ConfirmAction::Delete => ("Deleted", None),
+        let edit = match action {
+            ConfirmAction::Edit { form, install } => Some((form, install)),
+            ConfirmAction::Delete => None,
             ConfirmAction::Forget { name, removed } => {
                 return self.finish_forget(result, &name, removed);
             }
@@ -991,10 +984,10 @@ impl<B: Backend> App<B> {
             Ok(outcome) => {
                 self.reload(Some(&alias));
                 if self.status.is_none() {
-                    let backup = backup_description(outcome.backup.as_deref());
                     self.set_status(
                         StatusLevel::Info,
-                        format!("{verb} {alias} (backup: {backup})"),
+                        self.lang
+                            .confirmed(edit.is_some(), &alias, outcome.backup.as_deref()),
                     );
                 }
                 if let Some((form, install)) = edit {
@@ -1008,13 +1001,7 @@ impl<B: Backend> App<B> {
             }
             Err(WriteError::Stale { path }) => {
                 self.reload_selected();
-                self.set_status(
-                    StatusLevel::Error,
-                    format!(
-                        "{} was changed by another program; reloaded, try again",
-                        path.display()
-                    ),
-                );
+                self.set_status(StatusLevel::Error, self.lang.stale_confirm(&path));
             }
             Err(error) => self.set_status(StatusLevel::Error, error.to_string()),
         }
@@ -1026,7 +1013,7 @@ impl<B: Backend> App<B> {
         if mismatches.is_empty() {
             Mode::List
         } else {
-            Mode::Notice(NoticeState::new(mismatches, None))
+            Mode::Notice(NoticeState::new(mismatches, None).with_lang(self.lang))
         }
     }
 
@@ -1038,22 +1025,15 @@ impl<B: Backend> App<B> {
     ) -> Mode {
         match result {
             Ok(outcome) => {
-                let backup = backup_description(outcome.backup.as_deref());
-                let entries = if removed == 1 { "entry" } else { "entries" };
                 self.set_status(
                     StatusLevel::Info,
-                    format!(
-                        "Removed {removed} known_hosts {entries} for {name} (backup: {backup})"
-                    ),
+                    self.lang
+                        .removed_entries(removed, name, outcome.backup.as_deref()),
                 );
             }
-            Err(WriteError::Stale { path }) => self.set_status(
-                StatusLevel::Error,
-                format!(
-                    "{} was changed by another program; press x to try again",
-                    path.display()
-                ),
-            ),
+            Err(WriteError::Stale { path }) => {
+                self.set_status(StatusLevel::Error, self.lang.stale_forget(&path))
+            }
             Err(error) => self.set_status(StatusLevel::Error, error.to_string()),
         }
         Mode::List
@@ -1065,7 +1045,7 @@ impl<B: Backend> App<B> {
         };
         find_mismatches(self.backend.paths(), expected, effective)
             .into_iter()
-            .map(|mismatch| mismatch.to_string())
+            .map(|mismatch| self.lang.mismatch(&mismatch))
             .collect()
     }
 
@@ -1129,10 +1109,6 @@ impl<B: Backend> App<B> {
         }
         Mode::Notice(notice)
     }
-}
-
-fn backup_description(backup: Option<&Path>) -> String {
-    backup.map_or_else(|| "none".into(), |path| path.display().to_string())
 }
 
 #[cfg(test)]

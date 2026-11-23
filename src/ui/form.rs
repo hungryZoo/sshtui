@@ -7,34 +7,27 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, ClickTarget, FormField, FormKind, FormState};
 use crate::config::{FieldState, OptionKey};
+use crate::i18n::{Lang, Text};
 use crate::paths::SshPaths;
 use crate::ssh::keysetup;
-use crate::validate::ValidationError;
 
-use super::layout::{below, clip_cells, left, render_lines, right_of, row, rule};
+use super::layout::{
+    below, clip_cells, column_width, left, padded_cells, render_lines, right_of, row, rule,
+};
 use super::theme::bold;
 use super::{
-    HitMap, HoverFrame, HoverKey, KeyHint, KeyHints, Theme, command_lines, input_window, intensity,
+    HitMap, HoverFrame, HoverKey, KeyHints, Theme, command_lines, input_window, intensity,
     styled_wrapped,
 };
 
-const TAB: KeyHint = ("tab", "next", Some(KeyCode::Tab));
-const BACK: KeyHint = ("esc", "back", Some(KeyCode::Esc));
-const CLEAR: KeyHint = ("ctrl+u", "clear field", None);
-const PICK: KeyHint = ("↑↓", "pick key", None);
-const BROWSE: KeyHint = ("ctrl+o", "browse", Some(KeyCode::F(3)));
-const TOGGLE: KeyHint = ("space", "toggle", Some(KeyCode::Char(' ')));
-const CONNECT: KeyHint = ("enter", "connect", Some(KeyCode::Enter));
-const SAVE: KeyHint = ("enter", "save & connect", Some(KeyCode::Enter));
-const REVIEW: KeyHint = ("enter", "review changes", Some(KeyCode::Enter));
 const GUIDANCE_ROWS: usize = 5;
 const MAX_KEY_ROWS: usize = 4;
 
-pub(super) fn heading(form: &FormState, paths: &SshPaths) -> (String, String) {
+pub(super) fn heading(form: &FormState, paths: &SshPaths, lang: Lang) -> (String, String) {
     match form.kind() {
-        FormKind::New => ("New connection".into(), String::new()),
+        FormKind::New => (lang.text().new_connection.into(), String::new()),
         FormKind::Edit { entry, .. } => (
-            format!("Edit {}", entry.name),
+            lang.edit_title(&entry.name),
             format!(
                 "{}:{}",
                 paths.abbreviate_home(&entry.source),
@@ -45,23 +38,27 @@ pub(super) fn heading(form: &FormState, paths: &SshPaths) -> (String, String) {
 }
 
 pub(super) fn help<B: Backend>(app: &App<B>, form: &FormState) -> KeyHints {
-    use FormField::{DisablePassword, InstallKey, KeyFile};
-
-    let hints: &'static [KeyHint] = match (
-        form.kind(),
-        form.input(FormField::Nickname).value().is_empty(),
-        form.focus(),
-    ) {
-        (FormKind::Edit { .. }, _, KeyFile) => &[REVIEW, TAB, PICK, BROWSE, BACK],
-        (FormKind::Edit { .. }, _, InstallKey | DisablePassword) => &[REVIEW, TAB, TOGGLE, BACK],
-        (FormKind::Edit { .. }, _, _) => &[REVIEW, TAB, CLEAR, BACK],
-        (FormKind::New, true, KeyFile) => &[CONNECT, TAB, PICK, BROWSE, BACK],
-        (FormKind::New, true, InstallKey | DisablePassword) => &[CONNECT, TAB, TOGGLE, BACK],
-        (FormKind::New, true, _) => &[CONNECT, TAB, CLEAR, BACK],
-        (FormKind::New, false, KeyFile) => &[SAVE, TAB, PICK, BROWSE, BACK],
-        (FormKind::New, false, InstallKey | DisablePassword) => &[SAVE, TAB, TOGGLE, BACK],
-        (FormKind::New, false, _) => &[SAVE, TAB, CLEAR, BACK],
+    let text = app.lang().text();
+    let enter = match form.kind() {
+        FormKind::Edit { .. } => text.review_changes,
+        FormKind::New if form.input(FormField::Nickname).value().is_empty() => text.connect,
+        FormKind::New => text.save_and_connect,
     };
+    let mut hints = vec![
+        ("enter", enter, Some(KeyCode::Enter)),
+        ("tab", text.next, Some(KeyCode::Tab)),
+    ];
+    match form.focus() {
+        FormField::KeyFile => hints.extend([
+            ("↑↓", text.pick_key, None),
+            ("ctrl+o", text.browse, Some(KeyCode::F(3))),
+        ]),
+        field if field.is_checkbox() => {
+            hints.push(("space", text.toggle, Some(KeyCode::Char(' '))))
+        }
+        _ => hints.push(("ctrl+u", text.clear_field, None)),
+    }
+    hints.push(("esc", text.back, Some(KeyCode::Esc)));
     (app.form_first_error().is_none(), hints)
 }
 
@@ -91,7 +88,9 @@ pub(super) fn render<B: Backend>(
         rule(frame, row(area, 0), theme.rule);
     }
     let area = below(area, header_rows);
-    let columns = FieldColumns::new(area.width);
+    let lang = app.lang();
+    let text = lang.text();
+    let columns = FieldColumns::new(area.width, text);
     let mut rows = Vec::new();
     let mut gaps = Vec::new();
     let mut focused_row = 0;
@@ -117,8 +116,8 @@ pub(super) fn render<B: Backend>(
         } else {
             app.validation_error(field)
         };
-        let label = columns.label(field, focused, error.is_some(), theme, t);
-        let note = (!theme.dim).then(|| requirement(form, field, theme));
+        let label = columns.label(text.caption(field), focused, error.is_some(), theme, t);
+        let note = (!theme.dim).then(|| requirement(form, field, theme, text));
         let editable = !field.is_checkbox() && !form.is_read_only(field);
         let mut scroll = 0;
         if let Some(original) = form.original_lines(field) {
@@ -137,7 +136,9 @@ pub(super) fn render<B: Backend>(
                 lines.push(indented(columns.label, line));
             }
         } else if field.is_checkbox() {
-            lines.push(checkbox_line(form, field, label, area.width, theme, t));
+            lines.push(checkbox_line(
+                form, field, label, area.width, theme, t, text,
+            ));
         } else {
             let value_width = columns.input.saturating_sub(2);
             let (value, column, offset) = input_window(input, value_width, focused);
@@ -147,7 +148,7 @@ pub(super) fn render<B: Backend>(
             }
             let inherited = form.placeholder(field).filter(|_| input.value().is_empty());
             let value = match inherited {
-                Some(value) => Span::styled(format!("inherited: {value}"), theme.muted),
+                Some(value) => Span::styled(lang.inherited(value), theme.muted),
                 None if value.is_empty()
                     && field == FormField::Port
                     && matches!(form.kind(), FormKind::New)
@@ -168,15 +169,8 @@ pub(super) fn render<B: Backend>(
         let target = RowTarget::Field(field, editable, scroll);
         rows.extend(lines.into_iter().map(|line| (line, Some(target))));
         if let Some(error) = error {
-            let mut text = match error {
-                ValidationError::InvalidPort => "Port must be a number from 1 to 65535".into(),
-                _ => error.to_string(),
-            };
-            if let Some(first) = text.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
             for line in styled_wrapped(
-                &text,
+                &lang.inline_validation_error(&error),
                 area.width.saturating_sub(columns.label),
                 area.height,
                 theme.error,
@@ -201,6 +195,7 @@ pub(super) fn render<B: Backend>(
             columns.label,
             theme,
             hover,
+            lang,
         )
     };
     let guidance_rows = if theme.dim { 0 } else { GUIDANCE_ROWS };
@@ -274,6 +269,7 @@ fn key_rows(
     indent: u16,
     theme: &Theme,
     hover: HoverFrame<'_>,
+    lang: Lang,
 ) -> Vec<(Line<'static>, Option<RowTarget>)> {
     let keys = form.keys();
     let available = usize::from(area.height);
@@ -334,10 +330,7 @@ fn key_rows(
         lines.push((line, Some(RowTarget::Key(index))));
     }
     if end < keys.len() && lines.len() < available {
-        let line = Line::from(Span::styled(
-            format!("… {} more", keys.len() - end),
-            theme.muted,
-        ));
+        let line = Line::from(Span::styled(lang.more_keys(keys.len() - end), theme.muted));
         lines.push((indented(indent, line), None));
     }
     lines
@@ -350,18 +343,19 @@ fn checkbox_line(
     width: u16,
     theme: &Theme,
     hover: f32,
+    text: &Text,
 ) -> Line<'static> {
     let checked = form.is_checked(field);
     let (value, note) = if field == FormField::InstallKey {
         (
-            "Install the public key on the server",
-            Some(("asks for the server password once", theme.muted)),
+            text.install_public_key,
+            Some((text.password_once, theme.muted)),
         )
     } else {
         (
-            "Disable password prompt (recommended)",
+            text.disable_password_prompt,
             (checked && !form.is_checked(FormField::InstallKey))
-                .then_some(("make sure key login already works", theme.warn)),
+                .then_some((text.check_key_login, theme.warn)),
         )
     };
     let marker = if checked { "[x]" } else { "[ ]" };
@@ -388,8 +382,9 @@ struct FieldColumns {
 }
 
 impl FieldColumns {
-    fn new(width: u16) -> Self {
-        let label = 13.min(width.saturating_sub(10));
+    fn new(width: u16, text: &Text) -> Self {
+        let widest = column_width(11, FormField::ALL.map(|field| text.caption(field)));
+        let label = widest.saturating_add(2).min(width.saturating_sub(10));
         Self {
             label,
             input: width.saturating_sub(label).min(36),
@@ -398,7 +393,7 @@ impl FieldColumns {
 
     fn label(
         &self,
-        field: FormField,
+        caption: &str,
         focused: bool,
         invalid: bool,
         theme: &Theme,
@@ -411,10 +406,9 @@ impl FieldColumns {
             (false, false) => theme.hover_muted(t),
         };
         let marker = if focused { '›' } else { ' ' };
-        let caption = format!("{marker} {}", caption(field));
-        let width = usize::from(self.label);
+        let caption = format!("{marker} {caption}");
         Span::styled(
-            format!("{caption:<width$.width$}"),
+            padded_cells(&caption, self.label),
             theme.hover_text(style, t),
         )
     }
@@ -464,35 +458,21 @@ impl FieldColumns {
     }
 }
 
-fn caption(field: FormField) -> &'static str {
-    match field {
-        FormField::Nickname => "Nickname",
-        FormField::User => "User",
-        FormField::Address => "Address",
-        FormField::Port => "Port",
-        FormField::KeyFile => "Key file",
-        FormField::InstallKey => "Key login",
-        FormField::DisablePassword => "Password",
-    }
-}
-
-fn requirement(form: &FormState, field: FormField, theme: &Theme) -> Span<'static> {
+fn requirement(form: &FormState, field: FormField, theme: &Theme, text: &Text) -> Span<'static> {
     if form.is_read_only(field) {
-        return Span::styled("read-only", theme.warn);
+        return Span::styled(text.read_only, theme.warn);
     }
     match (form.kind(), field) {
-        (FormKind::New, FormField::Nickname) => {
-            Span::styled("optional · fill in to save this host", theme.muted)
-        }
+        (FormKind::New, FormField::Nickname) => Span::styled(text.optional_save, theme.muted),
         (FormKind::New, FormField::Address) | (FormKind::Edit { .. }, FormField::Nickname) => {
-            Span::styled("required", theme.warn)
+            Span::styled(text.required, theme.warn)
         }
         (FormKind::Edit { original, .. }, FormField::Address)
             if !matches!(original.get(OptionKey::HostName), FieldState::Absent) =>
         {
-            Span::styled("required", theme.warn)
+            Span::styled(text.required, theme.warn)
         }
-        _ => Span::styled("optional", theme.muted),
+        _ => Span::styled(text.optional, theme.muted),
     }
 }
 
@@ -509,23 +489,23 @@ fn render_guidance<B: Backend>(
     area: Rect,
     theme: &Theme,
 ) {
-    let mut lines = vec![Line::from(Span::styled("On enter", theme.muted))];
+    let lang = app.lang();
+    let text = lang.text();
+    let verb_width = column_width(5, [text.save_step, text.key_step, text.run_step]);
+    let step_content_width = area.width.saturating_sub(5 + verb_width);
+    let mut lines = vec![Line::from(Span::styled(text.on_enter, theme.muted))];
     let paths = app.backend().paths();
     let install = form.is_checked(FormField::InstallKey);
     if let Some((field, error)) = app.form_first_error() {
-        let action = if matches!(error, ValidationError::Empty { .. }) {
-            "Fill in"
-        } else {
-            "Fix"
-        };
+        let guidance = lang.continue_form(field, &error);
         lines.push(Line::from(Span::styled(
-            format!("  {action} {} to continue", caption(field)),
+            format!("  {guidance}"),
             theme.error,
         )));
     } else if let FormKind::Edit { entry, .. } = form.kind() {
         let source = paths.abbreviate_home(&entry.source);
         let review = styled_wrapped(
-            &format!("Review changes to {source}"),
+            &lang.review_source(&source),
             area.width.saturating_sub(4),
             if install {
                 area.height.saturating_sub(2).max(1)
@@ -542,8 +522,15 @@ fn render_guidance<B: Backend>(
         if install {
             lines.extend(step(
                 2,
-                "Key",
-                vec![key_install_line(form, paths, area.width, theme)],
+                text.key_step,
+                verb_width,
+                vec![key_install_line(
+                    form,
+                    paths,
+                    step_content_width,
+                    theme,
+                    lang,
+                )],
                 theme,
             ));
         }
@@ -552,11 +539,11 @@ fn render_guidance<B: Backend>(
         let save = !nickname.is_empty();
         let path = paths.abbreviate_home(&paths.config_file());
         if save {
-            let content = format!("{nickname} to {path}");
+            let content = lang.save_destination(nickname, &path);
             let mut remaining_nickname = nickname;
             let mut save_lines = styled_wrapped(
                 &content,
-                area.width.saturating_sub(10),
+                step_content_width,
                 if install {
                     area.height.saturating_sub(3).max(1)
                 } else {
@@ -579,14 +566,21 @@ fn render_guidance<B: Backend>(
                     }
                 }
             }
-            lines.extend(step(1, "Save", save_lines, theme));
+            lines.extend(step(1, text.save_step, verb_width, save_lines, theme));
         }
         let mut next = if save { 2 } else { 1 };
         if install {
             lines.extend(step(
                 next,
-                "Key",
-                vec![key_install_line(form, paths, area.width, theme)],
+                text.key_step,
+                verb_width,
+                vec![key_install_line(
+                    form,
+                    paths,
+                    step_content_width,
+                    theme,
+                    lang,
+                )],
                 theme,
             ));
             next += 1;
@@ -594,9 +588,8 @@ fn render_guidance<B: Backend>(
         if let Some(preview) = app.loaded_form_preview() {
             match preview {
                 Ok(command) => {
-                    let command =
-                        command_lines(&command, area.width.saturating_sub(10), area.height, theme);
-                    lines.extend(step(next, "Run", command, theme));
+                    let command = command_lines(&command, step_content_width, area.height, theme);
+                    lines.extend(step(next, text.run_step, verb_width, command, theme));
                 }
                 Err(error) => {
                     let error = styled_wrapped(
@@ -611,13 +604,13 @@ fn render_guidance<B: Backend>(
         }
         lines.push(Line::default());
         let hint = if save {
-            "Leave Nickname empty to connect once without saving.".into()
+            text.connect_without_saving.into()
         } else {
-            format!("Fill in Nickname to save this host to {path}.")
+            lang.fill_nickname(&path)
         };
         lines.extend(styled_wrapped(&hint, area.width, area.height, theme.muted));
     }
-    if let Some(notice) = form.shared_notice() {
+    if let Some(notice) = form.localized_shared_notice(lang) {
         lines.push(Line::default());
         lines.extend(styled_wrapped(&notice, area.width, area.height, theme.warn));
     }
@@ -637,14 +630,15 @@ fn key_install_line(
     paths: &SshPaths,
     width: u16,
     theme: &Theme,
+    lang: Lang,
 ) -> Line<'static> {
     let path = form.install_key_file().map_or_else(
-        || "<public key>".into(),
+        || lang.text().public_key_placeholder.into(),
         |key| paths.abbreviate_home(&keysetup::public_key_path(paths, key)),
     );
-    let text = format!("install {path} on the server");
+    let text = lang.install_on_server(&path);
     Line::from(Span::styled(
-        clip_cells(&text, width.saturating_sub(10)).into_owned(),
+        clip_cells(&text, width).into_owned(),
         theme.text,
     ))
 }
@@ -652,19 +646,20 @@ fn key_install_line(
 fn step(
     number: u8,
     verb: &str,
+    verb_width: u16,
     lines: Vec<Line<'static>>,
     theme: &Theme,
 ) -> impl Iterator<Item = Line<'static>> {
     let prefix = [
         Span::styled(format!("  {number} "), theme.muted),
-        Span::styled(format!("{verb:<5} "), theme.text),
+        Span::styled(format!("{} ", padded_cells(verb, verb_width)), theme.text),
     ];
     lines.into_iter().enumerate().map(move |(index, mut line)| {
         if index == 0 {
             line.spans.splice(0..0, prefix.clone());
             line
         } else {
-            indented(10, line)
+            indented(5 + verb_width, line)
         }
     })
 }

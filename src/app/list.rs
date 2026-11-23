@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crossterm::event::KeyEvent;
 
-use crate::config::{ConfigSet, FieldState, HostEntry, OptionKey, ReadWarning, block_fields};
+use crate::config::{ConfigSet, FieldState, HostEntry, OptionKey, block_fields};
 use crate::ssh::effective::EffectiveConfig;
 
 use super::{Backend, TextInput};
@@ -181,32 +181,5 @@ fn host_summary(config: &ConfigSet, entry: &HostEntry) -> String {
     match value(OptionKey::User) {
         Some(user) => format!("{user}@{address}"),
         None => address.to_owned(),
-    }
-}
-
-pub(super) fn describe_warning(warning: &ReadWarning) -> String {
-    match warning {
-        ReadWarning::Unreadable { path, error } => {
-            format!("Cannot read included file {}: {error}", path.display())
-        }
-        ReadWarning::UnsupportedInclude {
-            file,
-            line_number,
-            pattern,
-        } => format!(
-            "{}:{line_number}: unsupported Include pattern {pattern:?}",
-            file.display()
-        ),
-        ReadWarning::InvalidGlob {
-            file,
-            line_number,
-            pattern,
-        } => format!(
-            "{}:{line_number}: invalid Include pattern {pattern:?}",
-            file.display()
-        ),
-        ReadWarning::DepthExceeded { path } => {
-            format!("Include nesting is too deep at {}", path.display())
-        }
     }
 }
