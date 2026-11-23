@@ -18,6 +18,8 @@ pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Environment variable that disables automatic update checks and notices.
 pub const DISABLE_ENV: &str = "SSHTUI_NO_UPDATE_CHECK";
+/// Fully qualified so Homebrew can upgrade the formula without trusting the tap.
+pub const HOMEBREW_FORMULA: &str = "hungryZoo/tap/sshtui";
 
 const NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -447,7 +449,7 @@ impl InstallMethod {
     pub fn upgrade_steps(&self, latest: &str, work_dir: &Path) -> Option<Vec<UpgradeStep>> {
         let latest = release_version(latest)?;
         let steps = match self {
-            Self::Brew => vec![UpgradeStep::new("brew", ["upgrade", NAME])],
+            Self::Brew => vec![UpgradeStep::new("brew", ["upgrade", HOMEBREW_FORMULA])],
             Self::Cargo => vec![UpgradeStep::new(
                 "cargo",
                 [
@@ -962,7 +964,11 @@ mod tests {
             .upgrade_steps("1.2.3", work_dir)
             .unwrap();
         assert_eq!(brew.len(), 1);
-        assert_step(&brew[0], "brew", &["upgrade", "sshtui"].map(OsStr::new));
+        assert_step(
+            &brew[0],
+            "brew",
+            &["upgrade", "hungryZoo/tap/sshtui"].map(OsStr::new),
+        );
 
         let cargo = InstallMethod::Cargo
             .upgrade_steps("v1.2.3", work_dir)
@@ -1134,7 +1140,7 @@ mod tests {
                 &InstallMethod::Brew
             ),
             format!(
-                "sshtui 0.1.0 → 0.2.0 available\nupgrade: brew upgrade sshtui\nrelease: {}",
+                "sshtui 0.1.0 → 0.2.0 available\nupgrade: brew upgrade hungryZoo/tap/sshtui\nrelease: {}",
                 latest_url()
             )
         );

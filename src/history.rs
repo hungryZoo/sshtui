@@ -14,7 +14,7 @@ use crate::validate::{parse_port, validate_address, validate_key_file, validate_
 pub enum HistoryFormat {
     /// zsh, plain or extended (`: <start>:<elapsed>;<command>`), with metafied bytes.
     Zsh,
-    /// One command per line (bash, PowerShell), with optional numeric timestamps.
+    /// Commands separated by newlines or NULs, with optional numeric timestamps.
     Plain,
     /// fish entries beginning with "- cmd: ".
     Fish,
@@ -30,13 +30,25 @@ pub fn parse_commands(format: HistoryFormat, bytes: &[u8]) -> Vec<String> {
         bytes
     };
     let history = String::from_utf8_lossy(bytes);
+    let separators: &[_] = if format == HistoryFormat::Plain {
+        &['\n', '\0']
+    } else {
+        &['\n']
+    };
     let lines = history
-        .split_terminator('\n')
+        .split_terminator(separators)
         .map(|line| line.strip_suffix('\r').unwrap_or(line));
     let mut commands: Vec<_> = match format {
         HistoryFormat::Zsh => zsh_commands(lines),
         HistoryFormat::Plain => lines
-            .filter(|line| !line.strip_prefix('#').is_some_and(is_decimal))
+            .map(|line| {
+                line.trim_start_matches(|ch: char| ch.is_ascii_control() || ch == '\u{fffd}')
+            })
+            .filter(|line| {
+                !line.strip_prefix('#').is_some_and(|timestamp| {
+                    is_decimal(timestamp.strip_prefix('+').unwrap_or(timestamp))
+                })
+            })
             .map(str::to_owned)
             .collect(),
         HistoryFormat::Fish => lines
@@ -480,6 +492,26 @@ pub fn history_sources(
             path: dir.join("fish/fish_history"),
             format: HistoryFormat::Fish,
         }),
+        home.map(|home| HistorySource {
+            path: home.join(".history"),
+            format: HistoryFormat::Plain,
+        }),
+        home.map(|home| HistorySource {
+            path: home.join(".sh_history"),
+            format: HistoryFormat::Plain,
+        }),
+        home.map(|home| HistorySource {
+            path: home.join(".mksh_history"),
+            format: HistoryFormat::Plain,
+        }),
+        config_dir.map(|dir| HistorySource {
+            path: dir.join("nushell/history.txt"),
+            format: HistoryFormat::Plain,
+        }),
+        home.map(|home| HistorySource {
+            path: home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
+            format: HistoryFormat::Plain,
+        }),
         config_dir.map(|dir| HistorySource {
             path: dir.join("Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt"),
             format: HistoryFormat::Plain,
@@ -521,8 +553,10 @@ fn read_source(source: &HistorySource) -> Option<Vec<String>> {
     let bytes = if start == 0 {
         bytes.as_slice()
     } else {
-        let first_newline = bytes.iter().position(|&byte| byte == b'\n')?;
-        &bytes[first_newline + 1..]
+        let first_separator = bytes.iter().position(|&byte| {
+            byte == b'\n' || (source.format == HistoryFormat::Plain && byte == 0)
+        })?;
+        &bytes[first_separator + 1..]
     };
     Some(parse_commands(source.format, bytes))
 }
@@ -561,6 +595,22 @@ mod tests {
         assert_eq!(
             parse_commands(Plain, b"#123456\r\nssh one\r\n\n  \r\n#\n#12x\nssh \xff\r"),
             ["ssh one", "#", "#12x", "ssh �"]
+        );
+    }
+
+    #[test]
+    fn plain_skips_tcsh_numeric_timestamps() {
+        assert_eq!(
+            parse_commands(Plain, b"#+1700000000\r\nssh one\n#+\n#+12x\n"),
+            ["ssh one", "#+", "#+12x"]
+        );
+    }
+
+    #[test]
+    fn plain_splits_nul_records_and_strips_leading_control_characters() {
+        assert_eq!(
+            parse_commands(Plain, b"\x81\x01ssh one\0\t\x7fssh two\r\n\x1f\0ssh \xff"),
+            ["ssh one", "ssh two", "ssh �"]
         );
     }
 
@@ -842,6 +892,7 @@ mod tests {
         let empty = |name: &str| (name == HISTORY_FILE_ENV).then(OsString::new);
         let home = Path::new("home");
         let config = Path::new("config");
+        let nushell = source(config.join("nushell/history.txt"), Plain);
         let powershell = source(
             config.join("Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt"),
             Plain,
@@ -852,10 +903,21 @@ mod tests {
                 source(home.join(".zsh_history"), Zsh),
                 source(home.join(".bash_history"), Plain),
                 source(home.join(".local/share/fish/fish_history"), Fish),
+                source(home.join(".history"), Plain),
+                source(home.join(".sh_history"), Plain),
+                source(home.join(".mksh_history"), Plain),
+                nushell.clone(),
+                source(
+                    home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
+                    Plain,
+                ),
                 powershell.clone(),
             ]
         );
-        assert_eq!(history_sources(None, Some(config), &empty), [powershell]);
+        assert_eq!(
+            history_sources(None, Some(config), &empty),
+            [nushell, powershell]
+        );
         assert!(history_sources(None, None, &empty).is_empty());
     }
 
@@ -881,7 +943,43 @@ mod tests {
                 from_env[1].clone(),
                 source(home.join(".zsh_history"), Zsh),
                 from_env[2].clone(),
+                source(home.join(".history"), Plain),
+                source(home.join(".sh_history"), Plain),
+                source(home.join(".mksh_history"), Plain),
+                source(
+                    home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
+                    Plain,
+                ),
             ]
+        );
+    }
+
+    #[test]
+    fn history_reads_only_ssh_commands_from_tcsh_and_ksh() {
+        let temp = tempdir().unwrap();
+        let tcsh = temp.path().join(".history");
+        let ksh = temp.path().join(".sh_history");
+        fs::write(&tcsh, b"#+1700000000\nssh tcsh-host\n#+1700000001\nls\n").unwrap();
+        fs::write(&ksh, b"\x81\x01ssh ksh-first\0pwd\0\x7fssh ksh-last\0").unwrap();
+        let sources = history_sources(Some(temp.path()), None, &|_| None);
+        assert_eq!(
+            read_ssh_commands(&sources),
+            ["ssh tcsh-host", "ssh ksh-first", "ssh ksh-last"]
+        );
+    }
+
+    #[test]
+    fn history_discards_the_first_nul_delimited_fragment_of_a_bounded_tail() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(".sh_history");
+        let tail = b"ssh fragment\0ssh first\0ssh last\0";
+        let mut bytes = vec![b'x'; MAX_READ_BYTES as usize - tail.len() + 1];
+        bytes[0] = 0x81;
+        bytes.extend_from_slice(tail);
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            read_ssh_commands(&[source(path, Plain)]),
+            ["ssh first", "ssh last"]
         );
     }
 
