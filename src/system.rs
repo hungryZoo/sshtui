@@ -11,6 +11,7 @@ use crate::known_hosts::{self, ForgetPlan};
 use crate::paths::SshPaths;
 use crate::ssh::args::config_file_args;
 use crate::ssh::effective::{EffectiveConfig, EffectiveResolver, SystemResolver};
+use crate::ssh::{exec, keysetup};
 use crate::state;
 use crate::update::UpdatePlan;
 
@@ -84,6 +85,16 @@ impl Backend for SystemBackend {
 
     fn discover_keys(&self) -> Vec<KeyInfo> {
         keys::discover_keys(self.paths.ssh_dir()).unwrap_or_default()
+    }
+
+    fn read_public_key(&self, key_file: &str) -> Result<String, String> {
+        let path = keysetup::public_key_path(&self.paths, key_file);
+        keysetup::read_public_key(&path).map_err(|error| error.to_string())
+    }
+
+    fn install_key(&self, args: &[OsString], public_key: &str) -> Result<i32, String> {
+        let input = format!("{public_key}\n");
+        exec::run_with_input(&self.ssh, args, input.as_bytes()).map_err(|error| error.to_string())
     }
 
     fn is_writable(&self, path: &Path) -> bool {
@@ -193,6 +204,38 @@ mod tests {
         assert_eq!(config.hosts[0].name, "web");
         assert_eq!(config.hosts[0].source, backend.paths().config_file());
         assert_eq!(backend.ssh(), temp.path().join("fake-ssh"));
+    }
+
+    #[test]
+    fn reads_the_public_key_from_a_companion_file_in_the_injected_directory() {
+        let (_temp, backend) = fixture();
+        fs::create_dir(backend.paths().ssh_dir()).unwrap();
+        let key = "ssh-ed25519 AAAA fixture";
+        fs::write(
+            backend.paths().ssh_dir().join("id_fixture.pub"),
+            format!("{key}\nssh-ed25519 BBBB ignored\n"),
+        )
+        .unwrap();
+        assert_eq!(backend.read_public_key("~/ssh/id_fixture").unwrap(), key);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_a_single_public_key_line_on_stdin_and_returns_the_exit_code() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, backend) = fixture();
+        fs::write(backend.ssh(), "#!/bin/sh\ncat > \"$1\" || exit 1\nexit 7\n").unwrap();
+        fs::set_permissions(backend.ssh(), fs::Permissions::from_mode(0o755)).unwrap();
+        let received = temp.path().join("received");
+        let key = "ssh-ed25519 AAAA fixture";
+        assert_eq!(
+            backend
+                .install_key(&[received.clone().into_os_string()], key)
+                .unwrap(),
+            7
+        );
+        assert_eq!(fs::read_to_string(received).unwrap(), format!("{key}\n"));
     }
 
     #[test]

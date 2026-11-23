@@ -19,6 +19,7 @@ use crate::validate::Field;
 const HOSTS: &str = "Host web\n  HostName web.example.com\nHost db\nHost queue\n";
 const EDITABLE: &str = "Host web\n  HostName example.com\n  User alice\n";
 const MULTIPLE_KEYS: &str = "Host web\n  IdentityFile ~/first\n  IdentityFile ~/second\n";
+const PUBLIC_KEY: &str = "ssh-ed25519 AAAA fixture";
 
 enum CommitBehavior {
     Success,
@@ -46,6 +47,11 @@ struct FakeBackend {
     writes: RefCell<Vec<PendingWrite>>,
     commit_behaviors: RefCell<VecDeque<CommitBehavior>>,
     keys: Vec<KeyInfo>,
+    discover_calls: Cell<usize>,
+    public_key: Result<String, String>,
+    public_key_reads: RefCell<Vec<String>>,
+    install_result: Result<i32, String>,
+    installations: RefCell<Vec<(Vec<OsString>, String)>>,
     pick: RefCell<Option<Result<PickOutcome, DialogError>>>,
     pick_calls: Cell<usize>,
     unavailable: Option<String>,
@@ -84,6 +90,11 @@ impl FakeBackend {
             writes: RefCell::default(),
             commit_behaviors: RefCell::default(),
             keys: Vec::new(),
+            discover_calls: Cell::new(0),
+            public_key: Ok(PUBLIC_KEY.into()),
+            public_key_reads: RefCell::default(),
+            install_result: Ok(0),
+            installations: RefCell::default(),
             pick: RefCell::default(),
             pick_calls: Cell::new(0),
             unavailable: None,
@@ -167,7 +178,20 @@ impl Backend for FakeBackend {
     }
 
     fn discover_keys(&self) -> Vec<KeyInfo> {
+        self.discover_calls.set(self.discover_calls.get() + 1);
         self.keys.clone()
+    }
+
+    fn read_public_key(&self, key_file: &str) -> Result<String, String> {
+        self.public_key_reads.borrow_mut().push(key_file.into());
+        self.public_key.clone()
+    }
+
+    fn install_key(&self, args: &[OsString], public_key: &str) -> Result<i32, String> {
+        self.installations
+            .borrow_mut()
+            .push((args.into(), public_key.into()));
+        self.install_result.clone()
     }
 
     fn is_writable(&self, path: &Path) -> bool {
@@ -740,18 +764,26 @@ fn status_is_cleared_by_the_next_handled_key() {
 #[test]
 fn form_focus_wraps_in_both_directions() {
     let mut app = App::new(FakeBackend::new(""));
-    for expected in FormField::ALL.into_iter().cycle().skip(1).take(5) {
+    for expected in [
+        FormField::User,
+        FormField::Address,
+        FormField::Port,
+        FormField::KeyFile,
+        FormField::InstallKey,
+        FormField::DisablePassword,
+        FormField::Nickname,
+    ] {
         key(&mut app, KeyCode::Tab);
         assert_eq!(app.form().unwrap().focus(), expected);
     }
     app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    assert_eq!(app.form().unwrap().focus(), FormField::DisablePassword);
     key(&mut app, KeyCode::Down);
     assert_eq!(app.form().unwrap().focus(), FormField::Nickname);
     key(&mut app, KeyCode::Up);
-    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    assert_eq!(app.form().unwrap().focus(), FormField::DisablePassword);
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
-    assert_eq!(app.form().unwrap().focus(), FormField::Port);
+    assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
 }
 
 #[test]
@@ -2161,4 +2193,580 @@ fn form_first_error_is_in_field_order_and_works_behind_the_picker() {
     key(&mut app, KeyCode::Esc);
     set_field(&mut app, FormField::Port, "22");
     assert_eq!(app.form_first_error(), None);
+}
+
+fn click_field(app: &mut TestApp, field: FormField) {
+    app.handle_click(
+        ClickTarget::FormField {
+            field,
+            column: u16::MAX,
+        },
+        false,
+    );
+}
+
+#[test]
+fn form_checkboxes_toggle_by_space_and_click_and_ignore_text() {
+    let mut app = App::new(FakeBackend::new(""));
+    for field in [FormField::InstallKey, FormField::DisablePassword] {
+        while app.form().unwrap().focus() != field {
+            key(&mut app, KeyCode::Tab);
+        }
+        assert!(!app.form().unwrap().is_checked(field));
+        ch(&mut app, ' ');
+        ch(&mut app, 'x');
+        app.handle_paste("paste");
+        ctrl(&mut app, 'u');
+        assert!(app.form().unwrap().is_checked(field));
+        assert_eq!(value(&app, field), "");
+        click_field(&mut app, field);
+        assert_eq!(app.form().unwrap().focus(), field);
+        assert!(!app.form().unwrap().is_checked(field));
+    }
+    click_field(&mut app, FormField::InstallKey);
+    assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
+    assert!(app.form().unwrap().is_checked(FormField::InstallKey));
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.form().unwrap().focus(), FormField::DisablePassword);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
+}
+
+#[test]
+fn forms_discover_keys_when_opened_on_startup_from_list_and_for_editing() {
+    let startup = App::new(FakeBackend::new("").with_keys());
+    assert_eq!(startup.backend().discover_calls.get(), 1);
+    assert_eq!(startup.form().unwrap().keys(), startup.backend().keys);
+    let mut app = App::new(FakeBackend::new(HOSTS).with_keys());
+    assert_eq!(app.backend().discover_calls.get(), 0);
+    for (opens, action) in [KeyCode::Char('e'), KeyCode::Char('n'), KeyCode::Enter]
+        .into_iter()
+        .enumerate()
+    {
+        if action == KeyCode::Enter {
+            key(&mut app, KeyCode::Down);
+            key(&mut app, KeyCode::Down);
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, action);
+        assert_eq!(app.backend().discover_calls.get(), opens + 1);
+        assert_eq!(app.form().unwrap().keys(), app.backend().keys);
+        key(&mut app, KeyCode::Esc);
+    }
+}
+
+#[test]
+fn inline_keys_follow_vertical_navigation_and_leave_the_selection_in_the_input() {
+    let mut app = App::new(FakeBackend::new("").with_keys());
+    set_field(&mut app, FormField::KeyFile, "");
+    let selected = |app: &TestApp| app.form().unwrap().key_cursor();
+    assert_eq!(selected(&app), None);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(selected(&app), Some(0));
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_a");
+    key(&mut app, KeyCode::Down);
+    assert_eq!(selected(&app), Some(1));
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_b");
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
+    assert_eq!(selected(&app), None);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    assert_eq!(selected(&app), None);
+    app.handle_click(ClickTarget::KeyRow(1), false);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(selected(&app), Some(0));
+    key(&mut app, KeyCode::Up);
+    assert_eq!(selected(&app), None);
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_a");
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.form().unwrap().focus(), FormField::Port);
+
+    app.handle_click(ClickTarget::KeyRow(1), false);
+    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    assert_eq!(selected(&app), Some(1));
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_b");
+    ch(&mut app, 'x');
+    assert_eq!(selected(&app), None);
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_bx");
+    key(&mut app, KeyCode::Down);
+    app.handle_paste("_copy");
+    assert_eq!(selected(&app), None);
+    assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_a_copy");
+    key(&mut app, KeyCode::Down);
+    ctrl(&mut app, 'u');
+    assert_eq!(selected(&app), None);
+    assert_eq!(value(&app, FormField::KeyFile), "");
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
+    assert_eq!(selected(&app), None);
+    key(&mut app, KeyCode::BackTab);
+    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::BackTab);
+    assert_eq!(app.form().unwrap().focus(), FormField::Port);
+    assert_eq!(selected(&app), None);
+}
+
+#[test]
+fn empty_and_read_only_key_lists_use_field_navigation() {
+    for (backend, edit) in [
+        (FakeBackend::new(""), false),
+        (FakeBackend::new(MULTIPLE_KEYS).with_keys(), true),
+    ] {
+        let mut app = App::new(backend);
+        if edit {
+            ch(&mut app, 'e');
+        }
+        click_field(&mut app, FormField::KeyFile);
+        assert_eq!(app.form().unwrap().is_read_only(FormField::KeyFile), edit);
+        app.handle_click(ClickTarget::KeyRow(0), false);
+        assert_eq!(app.form().unwrap().key_cursor(), None);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
+        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.form().unwrap().focus(), FormField::Port);
+    }
+}
+
+#[test]
+fn disable_password_is_saved_to_config_for_new_aliases() {
+    let backend = FakeBackend::new("");
+    backend.commit_with(CommitBehavior::WriteFile);
+    let mut app = App::new(backend);
+    fill_named_host(&mut app, "web");
+    click_field(&mut app, FormField::DisablePassword);
+    key(&mut app, KeyCode::Enter);
+    let written = fs::read_to_string(app.backend().paths().config_file()).unwrap();
+    assert!(
+        written
+            .lines()
+            .any(|line| line.trim() == "PasswordAuthentication no")
+    );
+    assert_eq!(app.exit(), Some(&Exit::Connect(vec!["web".into()])));
+}
+
+#[test]
+fn direct_preview_and_connection_include_the_disable_password_option() {
+    let mut app = App::new(FakeBackend::new(""));
+    set_field(&mut app, FormField::Address, "example.com");
+    click_field(&mut app, FormField::DisablePassword);
+    assert_eq!(
+        app.form_preview(),
+        Some(Ok("ssh -o PasswordAuthentication=no example.com".into()))
+    );
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.exit(),
+        Some(&Exit::Connect(vec![
+            "-o".into(),
+            "PasswordAuthentication=no".into(),
+            "example.com".into(),
+        ]))
+    );
+}
+
+#[test]
+fn password_checkbox_diffs_set_remove_and_preserve_the_original_option() {
+    for (original, checked, toggle, password_changes) in [
+        (
+            "",
+            false,
+            true,
+            vec![(DiffTag::Added, "PasswordAuthentication no")],
+        ),
+        (
+            "  PasswordAuthentication No\n",
+            true,
+            true,
+            vec![(DiffTag::Removed, "PasswordAuthentication No")],
+        ),
+        ("  PasswordAuthentication No\n", true, false, vec![]),
+        ("  PasswordAuthentication yes\n", false, false, vec![]),
+        ("", false, false, vec![]),
+        (
+            "  PasswordAuthentication yes\n",
+            false,
+            true,
+            vec![
+                (DiffTag::Removed, "PasswordAuthentication yes"),
+                (DiffTag::Added, "PasswordAuthentication no"),
+            ],
+        ),
+    ] {
+        let mut app = App::new(FakeBackend::new(&format!("{EDITABLE}{original}")));
+        ch(&mut app, 'e');
+        assert!(!app.form().unwrap().is_checked(FormField::InstallKey));
+        assert_eq!(
+            app.form().unwrap().is_checked(FormField::DisablePassword),
+            checked
+        );
+        if toggle {
+            click_field(&mut app, FormField::DisablePassword);
+        }
+        set_field(&mut app, FormField::User, "bob");
+        key(&mut app, KeyCode::Enter);
+        let changes: Vec<_> = confirm(&app)
+            .hunks()
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| {
+                line.tag != DiffTag::Context
+                    && line.text.trim().starts_with("PasswordAuthentication")
+            })
+            .map(|line| (line.tag, line.text.trim()))
+            .collect();
+        assert_eq!(changes, password_changes);
+    }
+}
+
+#[test]
+fn unrepresentable_password_option_is_read_only() {
+    let original = "  PasswordAuthentication no extra";
+    let mut app = App::new(FakeBackend::new(&format!("{EDITABLE}{original}\n")));
+    ch(&mut app, 'e');
+    let field = FormField::DisablePassword;
+    assert!(app.form().unwrap().is_read_only(field));
+    assert_eq!(
+        app.form().unwrap().original_lines(field).unwrap(),
+        [original]
+    );
+    click_field(&mut app, field);
+    ch(&mut app, ' ');
+    assert!(!app.form().unwrap().is_checked(field));
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert_eq!(status(&app, StatusLevel::Info), "No changes");
+    assert!(app.backend().writes.borrow().is_empty());
+}
+
+#[test]
+fn key_install_requires_validation_and_a_public_key_before_writing() {
+    let mut backend = FakeBackend::new("");
+    backend.public_key = Err("fixture public key is missing".into());
+    let mut app = App::new(backend);
+    click_field(&mut app, FormField::InstallKey);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(status(&app, StatusLevel::Error), "address is required");
+    assert_eq!(app.form().unwrap().focus(), FormField::Address);
+    fill_named_host(&mut app, "web");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        "Key login needs a key file"
+    );
+    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    assert!(app.backend().public_key_reads.borrow().is_empty());
+
+    set_field(&mut app, FormField::KeyFile, "~/.ssh/id_fixture");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        status(&app, StatusLevel::Error),
+        "fixture public key is missing"
+    );
+    assert_eq!(app.form().unwrap().focus(), FormField::KeyFile);
+    assert_eq!(
+        *app.backend().public_key_reads.borrow(),
+        ["~/.ssh/id_fixture"]
+    );
+    assert!(app.take_key_install().is_none());
+    assert!(app.backend().writes.borrow().is_empty());
+    assert!(app.backend().installations.borrow().is_empty());
+    assert_eq!(app.exit(), None);
+}
+
+fn submit_key_install(app: &mut TestApp) {
+    click_field(app, FormField::InstallKey);
+    key(app, KeyCode::Enter);
+}
+
+fn perform_key_install(app: &mut TestApp, label: &str, destination: &str) {
+    let pending = app.take_key_install().unwrap();
+    assert_eq!(pending.label, label);
+    assert_eq!(pending.public_key, PUBLIC_KEY);
+    assert_eq!(
+        pending.args.last().unwrap(),
+        crate::ssh::keysetup::REMOTE_INSTALL_SCRIPT
+    );
+    assert_eq!(pending.args[pending.args.len() - 2], destination);
+    assert!(
+        pending
+            .args
+            .windows(2)
+            .any(|args| args == ["-o", "PasswordAuthentication=yes"])
+    );
+    assert!(
+        !pending
+            .args
+            .iter()
+            .any(|arg| arg == "PasswordAuthentication=no")
+    );
+    assert!(app.take_key_install().is_none());
+    assert!(app.backend().installations.borrow().is_empty());
+    let result = app
+        .backend()
+        .install_key(&pending.args, &pending.public_key);
+    assert_eq!(
+        *app.backend().installations.borrow(),
+        [(pending.args, pending.public_key)]
+    );
+    app.finish_key_install(result);
+}
+
+#[test]
+fn direct_key_install_ignores_input_and_connects_only_after_success() {
+    for (result, failure) in [
+        (Ok(0), None),
+        (
+            Ok(1),
+            Some("Key install failed for example.com (ssh exit code 1)"),
+        ),
+        (
+            Err("spawn error".into()),
+            Some("Key install failed for example.com: spawn error"),
+        ),
+    ] {
+        let mut backend = FakeBackend::new("").with_keys();
+        backend.install_result = result;
+        let mut app = App::new(backend);
+        set_field(&mut app, FormField::Address, "example.com");
+        set_field(&mut app, FormField::User, "alice");
+        set_field(&mut app, FormField::KeyFile, "~/.ssh/id_a");
+        click_field(&mut app, FormField::DisablePassword);
+        submit_key_install(&mut app);
+
+        app.finish_key_install(Ok(0));
+        ctrl(&mut app, 'c');
+        key(&mut app, KeyCode::Enter);
+        click_field(&mut app, FormField::InstallKey);
+        app.handle_paste("ignored");
+        app.handle_scroll(true);
+        assert!(app.form().unwrap().is_checked(FormField::InstallKey));
+        assert_eq!(app.form().unwrap().focus(), FormField::InstallKey);
+        assert_eq!(*app.backend().public_key_reads.borrow(), ["~/.ssh/id_a"]);
+        assert_eq!(app.exit(), None);
+        perform_key_install(&mut app, "example.com", "alice@example.com");
+
+        assert!(matches!(app.mode(), Mode::Form(_)));
+        assert!(app.backend().writes.borrow().is_empty());
+        if let Some(message) = failure {
+            assert_eq!(app.exit(), None);
+            assert_eq!(status(&app, StatusLevel::Error), message);
+            assert_eq!(value(&app, FormField::KeyFile), "~/.ssh/id_a");
+            key(&mut app, KeyCode::Tab);
+            assert_eq!(app.form().unwrap().focus(), FormField::DisablePassword);
+        } else {
+            assert_eq!(app.status(), None);
+            assert_eq!(
+                app.exit(),
+                Some(&Exit::Connect(vec![
+                    "-o".into(),
+                    "PasswordAuthentication=no".into(),
+                    "-i".into(),
+                    app.backend()
+                        .paths()
+                        .ssh_dir()
+                        .join("id_a")
+                        .into_os_string(),
+                    "alice@example.com".into(),
+                ]))
+            );
+        }
+    }
+}
+
+#[test]
+fn named_key_install_uses_the_saved_alias_and_preserves_the_post_save_flow() {
+    for (result, mismatch, failure) in [
+        (Ok(0), false, None),
+        (Ok(0), true, None),
+        (
+            Ok(1),
+            false,
+            Some("Key install failed for web (ssh exit code 1)"),
+        ),
+        (
+            Err("spawn error".into()),
+            true,
+            Some("Key install failed for web: spawn error"),
+        ),
+    ] {
+        let initial = if failure.is_some() {
+            "Host prod\nHost queue\n"
+        } else {
+            ""
+        };
+        let mut backend = FakeBackend::new(initial);
+        backend.live_prefix = true;
+        backend.install_result = result;
+        backend.commit_with(CommitBehavior::WriteFile);
+        backend.set_effective(
+            "web",
+            EffectiveConfig {
+                user: Some(if mismatch { "bob" } else { "alice" }.into()),
+                identity_files: vec!["~/.ssh/id_fixture".into()],
+                ..basic_expected()
+            },
+        );
+        let mut app = App::new(backend);
+        if failure.is_some() {
+            ch(&mut app, '/');
+            ch(&mut app, 'q');
+            key(&mut app, KeyCode::Enter);
+            ch(&mut app, 'n');
+        } else {
+            assert_eq!(app.backend().config_prefix(), ["-F", "none"]);
+        }
+        fill_named_host(&mut app, "web");
+        set_field(&mut app, FormField::KeyFile, "~/.ssh/id_fixture");
+        submit_key_install(&mut app);
+
+        assert_eq!(app.backend().writes.borrow().len(), 1);
+        assert_eq!(app.exit(), None);
+        assert!(app.backend().connections.borrow().is_empty());
+        perform_key_install(&mut app, "web", "web");
+        assert_eq!(
+            app.backend().installations.borrow()[0].0[..2],
+            [
+                "-F".into(),
+                app.backend().paths().config_file().into_os_string()
+            ]
+        );
+        if let Some(message) = failure {
+            assert!(matches!(app.mode(), Mode::List));
+            assert_eq!(
+                app.filtered_hosts()
+                    .nth(app.selection().unwrap())
+                    .unwrap()
+                    .entry
+                    .name,
+                "web"
+            );
+            assert_eq!(status(&app, StatusLevel::Error), message);
+            assert_eq!(app.exit(), None);
+        } else if mismatch {
+            assert!(notice(&app).connects());
+            assert_eq!(
+                notice(&app).lines(),
+                ["User: saved \"alice\" but ssh will use \"bob\""]
+            );
+            assert_eq!(app.exit(), None);
+            key(&mut app, KeyCode::Enter);
+        } else {
+            assert!(matches!(app.mode(), Mode::Form(_)));
+            assert_eq!(app.status(), None);
+        }
+        if failure.is_none() {
+            let expected = connect_args(
+                app.backend().paths(),
+                &app.backend().config_prefix(),
+                &ConnectTarget::Alias("web".into()),
+            )
+            .unwrap();
+            assert_eq!(app.exit(), Some(&Exit::Connect(expected)));
+            assert_eq!(*app.backend().connections.borrow(), ["web"]);
+        }
+    }
+}
+
+#[test]
+fn edited_key_install_uses_inherited_keys_and_waits_for_a_changed_config_to_be_saved() {
+    for (result, changed, mismatch, failure) in [
+        (Ok(0), false, false, None),
+        (Ok(0), true, true, None),
+        (
+            Ok(1),
+            true,
+            false,
+            Some("Key install failed for web (ssh exit code 1)"),
+        ),
+        (
+            Err("spawn error".into()),
+            false,
+            false,
+            Some("Key install failed for web: spawn error"),
+        ),
+    ] {
+        let mut backend = FakeBackend::new(EDITABLE);
+        backend.install_result = result;
+        backend.commit_with(CommitBehavior::WriteFile);
+        backend.set_effective(
+            "web",
+            EffectiveConfig {
+                user: Some(if changed && !mismatch { "bob" } else { "alice" }.into()),
+                identity_files: vec!["~/.ssh/inherited".into()],
+                ..basic_expected()
+            },
+        );
+        let mut app = App::new(backend);
+        ch(&mut app, 'e');
+        if changed {
+            set_field(&mut app, FormField::User, "bob");
+        }
+        submit_key_install(&mut app);
+        assert_eq!(
+            *app.backend().public_key_reads.borrow(),
+            ["~/.ssh/inherited"]
+        );
+        assert!(app.backend().writes.borrow().is_empty());
+        if changed {
+            assert!(matches!(app.mode(), Mode::Confirm(_)));
+            assert!(app.take_key_install().is_none());
+            key(&mut app, KeyCode::Enter);
+        }
+        assert!(matches!(app.mode(), Mode::List));
+        assert_eq!(app.backend().writes.borrow().len(), usize::from(changed));
+        perform_key_install(&mut app, "web", "web");
+        assert_eq!(app.exit(), None);
+        if let Some(message) = failure {
+            assert!(matches!(app.mode(), Mode::List));
+            assert_eq!(status(&app, StatusLevel::Error), message);
+        } else {
+            assert_eq!(
+                status(&app, StatusLevel::Info),
+                "Installed the public key on web"
+            );
+            if mismatch {
+                assert!(!notice(&app).connects());
+                assert_eq!(
+                    notice(&app).lines(),
+                    ["User: saved \"bob\" but ssh will use \"alice\""]
+                );
+                key(&mut app, KeyCode::Enter);
+            }
+            assert!(matches!(app.mode(), Mode::List));
+        }
+    }
+}
+
+#[test]
+fn installation_is_never_queued_when_a_save_fails_or_an_edit_is_cancelled() {
+    let backend = FakeBackend::new("");
+    backend.commit_with(CommitBehavior::Stale);
+    let mut app = App::new(backend);
+    fill_named_host(&mut app, "web");
+    set_field(&mut app, FormField::KeyFile, "~/.ssh/id_fixture");
+    submit_key_install(&mut app);
+    assert!(app.take_key_install().is_none());
+    assert!(status(&app, StatusLevel::Error).contains("press Enter to retry"));
+    assert!(app.form().unwrap().is_checked(FormField::InstallKey));
+
+    let backend = FakeBackend::new(EDITABLE);
+    backend.commit_with(CommitBehavior::Stale);
+    let mut app = App::new(backend);
+    ch(&mut app, 'e');
+    set_field(&mut app, FormField::KeyFile, "~/.ssh/id_fixture");
+    submit_key_install(&mut app);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.take_key_install().is_none());
+    assert!(app.backend().writes.borrow().is_empty());
+    assert!(app.form().unwrap().is_checked(FormField::InstallKey));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::List));
+    assert!(status(&app, StatusLevel::Error).contains("try again"));
+    assert!(app.take_key_install().is_none());
+    assert!(app.backend().installations.borrow().is_empty());
 }

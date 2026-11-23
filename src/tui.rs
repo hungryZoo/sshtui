@@ -1,7 +1,8 @@
 //! Terminal initialization and restoration, and the event loop.
 
-use std::io::{self, stdout};
+use std::io::{self, Write, stdout};
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,7 @@ use crossterm::terminal::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::app::{App, Backend, ClickTarget, Exit};
+use crate::app::{App, Backend, ClickTarget, Exit, KeyInstall};
 use crate::ui::{self, ColorMode, HitMap, Hover, Theme};
 
 // The terminal and panic hook both belong to the process.
@@ -83,13 +84,17 @@ pub fn run<B: Backend>(app: App<B>, options: Options) -> io::Result<Exit> {
         .map_err(|_| io::Error::other("a terminal session is already active"))?;
     let previous_hook = Arc::new(panic::take_hook());
     let chained_hook = Arc::clone(&previous_hook);
+    let active = Arc::new(AtomicBool::new(false));
+    let hook_active = Arc::clone(&active);
     panic::set_hook(Box::new(move |info| {
-        let _ = restore_terminal();
+        if hook_active.load(Ordering::Relaxed) {
+            let _ = restore_terminal();
+        }
         chained_hook(info);
     }));
 
     // Restore the hook outside the unwind, since setting it from a panicking thread fails.
-    let result = panic::catch_unwind(AssertUnwindSafe(|| run_loop(app, options)));
+    let result = panic::catch_unwind(AssertUnwindSafe(|| run_loop(app, options, &active)));
     drop(panic::take_hook());
     if let Some(hook) = Arc::into_inner(previous_hook) {
         panic::set_hook(hook);
@@ -102,15 +107,15 @@ pub fn run<B: Backend>(app: App<B>, options: Options) -> io::Result<Exit> {
     }
 }
 
-fn run_loop<B: Backend>(mut app: App<B>, options: Options) -> io::Result<Exit> {
+fn run_loop<B: Backend>(
+    mut app: App<B>,
+    options: Options,
+    active: &AtomicBool,
+) -> io::Result<Exit> {
     // Drop the session guard before ratatui restores the cursor.
     let mut terminal;
-    let mut session = RestoreTerminal { restored: false };
-    enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
-    if options.mouse {
-        execute!(stdout(), EnableMouseCapture)?;
-    }
+    let session = RestoreTerminal { active };
+    session.resume(options.mouse)?;
     terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     let mut mouse = options.mouse.then(MouseState::default);
     let theme = Theme::new(options.color);
@@ -151,22 +156,46 @@ fn run_loop<B: Backend>(mut app: App<B>, options: Options) -> io::Result<Exit> {
         if app.take_full_redraw() {
             terminal.clear()?;
         }
+        if let Some(install) = app.take_key_install() {
+            session.suspend(true)?;
+            let result = run_key_install(app.backend(), &install)?;
+            session.resume(options.mouse)?;
+            mouse = options.mouse.then(MouseState::default);
+            terminal.clear()?;
+            terminal.draw(|frame| {
+                ui::render(frame, &app, &theme, None);
+            })?;
+            app.finish_key_install(result);
+        }
     };
 
-    if options.mouse {
-        // Stop new mouse reports and discard queued input while raw mode is still active.
-        execute!(stdout(), DisableMouseCapture)?;
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-            if !event::poll(remaining.min(Duration::from_millis(50)))? {
-                break;
-            }
-            event::read()?;
-        }
-    }
-    restore_terminal()?;
-    session.restored = true;
+    session.suspend(options.mouse)?;
     Ok(exit)
+}
+
+fn run_key_install<B: Backend>(
+    backend: &B,
+    install: &KeyInstall,
+) -> io::Result<Result<i32, String>> {
+    let mut output = stdout();
+    writeln!(
+        output,
+        "sshtui: installing the public key on {}",
+        install.label
+    )?;
+    writeln!(output, "sshtui: the server may ask for your password")?;
+    output.flush()?;
+    let result = backend.install_key(&install.args, &install.public_key);
+    let message = if matches!(result, Ok(0)) {
+        "sshtui: key install finished"
+    } else {
+        "sshtui: key install failed"
+    };
+    writeln!(output, "{message}")?;
+    writeln!(output, "Press Enter to return to sshtui.")?;
+    output.flush()?;
+    io::stdin().read_line(&mut String::new())?;
+    Ok(result)
 }
 
 fn handle_event<B: Backend>(
@@ -214,13 +243,42 @@ fn handle_event<B: Backend>(
     true
 }
 
-struct RestoreTerminal {
-    restored: bool,
+struct RestoreTerminal<'a> {
+    active: &'a AtomicBool,
 }
 
-impl Drop for RestoreTerminal {
+impl RestoreTerminal<'_> {
+    fn resume(&self, mouse: bool) -> io::Result<()> {
+        self.active.store(true, Ordering::Relaxed);
+        enable_raw_mode()?;
+        execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+        if mouse {
+            execute!(stdout(), EnableMouseCapture)?;
+        }
+        Ok(())
+    }
+
+    fn suspend(&self, drain_input: bool) -> io::Result<()> {
+        if drain_input {
+            // Stop new mouse reports and discard queued input before returning to cooked mode.
+            execute!(stdout(), DisableMouseCapture)?;
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                if !event::poll(remaining.min(Duration::from_millis(50)))? {
+                    break;
+                }
+                event::read()?;
+            }
+        }
+        restore_terminal()?;
+        self.active.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+impl Drop for RestoreTerminal<'_> {
     fn drop(&mut self) {
-        if !self.restored {
+        if self.active.swap(false, Ordering::Relaxed) {
             let _ = restore_terminal();
         }
     }
@@ -443,12 +501,16 @@ mod tests {
     #[test]
     fn releasing_off_the_pressed_button_clears_the_press_without_acting() {
         let mut app = App::new(FakeBackend::new(""));
-        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        }
         let hits = rendered_hits(&app, 24);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
         let button = (0..24)
             .flat_map(|row| (0..80).map(move |column| (column, row)))
-            .find(|&(column, row)| hits.hit(column, row) == Some(&ClickTarget::Key(KeyCode::F(2))))
+            .find(|&(column, row)| hits.hit(column, row) == Some(&ClickTarget::Key(KeyCode::F(3))))
             .unwrap();
         let field = (12, 8);
         assert!(matches!(

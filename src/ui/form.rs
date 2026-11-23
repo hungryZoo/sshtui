@@ -3,10 +3,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Backend, ClickTarget, FormField, FormKind, FormState};
 use crate::config::{FieldState, OptionKey};
 use crate::paths::SshPaths;
+use crate::ssh::keysetup;
 use crate::validate::ValidationError;
 
 use super::layout::{below, clip_cells, left, render_lines, right_of, row, rule};
@@ -19,11 +21,14 @@ use super::{
 const TAB: KeyHint = ("tab", "next", Some(KeyCode::Tab));
 const BACK: KeyHint = ("esc", "back", Some(KeyCode::Esc));
 const CLEAR: KeyHint = ("ctrl+u", "clear field", None);
-const PICK: KeyHint = ("ctrl+l", "pick key", Some(KeyCode::F(2)));
+const PICK: KeyHint = ("↑↓", "pick key", None);
 const BROWSE: KeyHint = ("ctrl+o", "browse", Some(KeyCode::F(3)));
+const TOGGLE: KeyHint = ("space", "toggle", Some(KeyCode::Char(' ')));
 const CONNECT: KeyHint = ("enter", "connect", Some(KeyCode::Enter));
 const SAVE: KeyHint = ("enter", "save & connect", Some(KeyCode::Enter));
 const REVIEW: KeyHint = ("enter", "review changes", Some(KeyCode::Enter));
+const GUIDANCE_ROWS: usize = 5;
+const MAX_KEY_ROWS: usize = 4;
 
 pub(super) fn heading(form: &FormState, paths: &SshPaths) -> (String, String) {
     match form.kind() {
@@ -40,20 +45,30 @@ pub(super) fn heading(form: &FormState, paths: &SshPaths) -> (String, String) {
 }
 
 pub(super) fn help<B: Backend>(app: &App<B>, form: &FormState) -> KeyHints {
-    let key_file = form.focus() == FormField::KeyFile;
+    use FormField::{DisablePassword, InstallKey, KeyFile};
+
     let hints: &'static [KeyHint] = match (
         form.kind(),
         form.input(FormField::Nickname).value().is_empty(),
-        key_file,
+        form.focus(),
     ) {
-        (FormKind::Edit { .. }, _, false) => &[REVIEW, TAB, CLEAR, BACK],
-        (FormKind::Edit { .. }, _, true) => &[REVIEW, TAB, PICK, BROWSE, BACK],
-        (FormKind::New, true, false) => &[CONNECT, TAB, CLEAR, BACK],
-        (FormKind::New, true, true) => &[CONNECT, TAB, PICK, BROWSE, BACK],
-        (FormKind::New, false, false) => &[SAVE, TAB, CLEAR, BACK],
-        (FormKind::New, false, true) => &[SAVE, TAB, PICK, BROWSE, BACK],
+        (FormKind::Edit { .. }, _, KeyFile) => &[REVIEW, TAB, PICK, BROWSE, BACK],
+        (FormKind::Edit { .. }, _, InstallKey | DisablePassword) => &[REVIEW, TAB, TOGGLE, BACK],
+        (FormKind::Edit { .. }, _, _) => &[REVIEW, TAB, CLEAR, BACK],
+        (FormKind::New, true, KeyFile) => &[CONNECT, TAB, PICK, BROWSE, BACK],
+        (FormKind::New, true, InstallKey | DisablePassword) => &[CONNECT, TAB, TOGGLE, BACK],
+        (FormKind::New, true, _) => &[CONNECT, TAB, CLEAR, BACK],
+        (FormKind::New, false, KeyFile) => &[SAVE, TAB, PICK, BROWSE, BACK],
+        (FormKind::New, false, InstallKey | DisablePassword) => &[SAVE, TAB, TOGGLE, BACK],
+        (FormKind::New, false, _) => &[SAVE, TAB, CLEAR, BACK],
     };
     (app.form_first_error().is_none(), hints)
+}
+
+#[derive(Clone, Copy)]
+enum RowTarget {
+    Field(FormField, bool, usize),
+    Key(usize),
 }
 
 pub(super) fn render<B: Backend>(
@@ -68,21 +83,25 @@ pub(super) fn render<B: Backend>(
     if area.is_empty() {
         return;
     }
-    let header_rows = area.height.saturating_sub(5).min(2);
+    let header_rows = area
+        .height
+        .saturating_sub(FormField::ALL.len() as u16)
+        .min(2);
     if header_rows > 0 {
         rule(frame, row(area, 0), theme.rule);
     }
     let area = below(area, header_rows);
     let columns = FieldColumns::new(area.width);
-    let mut lines = Vec::new();
-    let mut field_rows = Vec::new();
+    let mut rows = Vec::new();
+    let mut gaps = Vec::new();
     let mut focused_row = 0;
     let mut cursor = None;
     for field in FormField::ALL {
-        if !lines.is_empty() && area.height >= 9 {
-            lines.push(Line::default());
+        if !rows.is_empty() && field != FormField::DisablePassword {
+            gaps.push(rows.len());
         }
-        let first = lines.len();
+        let first = rows.len();
+        let mut lines = Vec::new();
         let input = form.input(field);
         let focused = form.focus() == field;
         let t = if focused {
@@ -100,7 +119,7 @@ pub(super) fn render<B: Backend>(
         };
         let label = columns.label(field, focused, error.is_some(), theme, t);
         let note = (!theme.dim).then(|| requirement(form, field, theme));
-        let editable = !form.is_read_only(field);
+        let editable = !field.is_checkbox() && !form.is_read_only(field);
         let mut scroll = 0;
         if let Some(original) = form.original_lines(field) {
             let mut original = styled_wrapped(
@@ -117,11 +136,13 @@ pub(super) fn render<B: Backend>(
             for line in original {
                 lines.push(indented(columns.label, line));
             }
+        } else if field.is_checkbox() {
+            lines.push(checkbox_line(form, field, label, area.width, theme, t));
         } else {
             let value_width = columns.input.saturating_sub(2);
             let (value, column, offset) = input_window(input, value_width, focused);
             scroll = offset;
-            if focused && !theme.dim && columns.input > 0 {
+            if focused && !theme.dim && columns.input > 0 && form.key_cursor().is_none() {
                 cursor = Some(columns.label + u16::from(columns.input >= 2) + column);
             }
             let inherited = form.placeholder(field).filter(|_| input.value().is_empty());
@@ -144,7 +165,8 @@ pub(super) fn render<B: Backend>(
             );
             lines.push(columns.field_line(label, value, style, note));
         }
-        field_rows.push((first..lines.len(), field, editable, scroll));
+        let target = RowTarget::Field(field, editable, scroll);
+        rows.extend(lines.into_iter().map(|line| (line, Some(target))));
         if let Some(error) = error {
             let mut text = match error {
                 ValidationError::InvalidPort => "Port must be a number from 1 to 65535".into(),
@@ -159,24 +181,79 @@ pub(super) fn render<B: Backend>(
                 area.height,
                 theme.error,
             ) {
-                lines.push(indented(columns.label, line));
+                rows.push((indented(columns.label, line), None));
             }
         }
     }
 
     let height = usize::from(area.height);
+    let available = height.saturating_sub(rows.len());
+    let key_rows = if theme.dim || form.is_read_only(FormField::KeyFile) {
+        Vec::new()
+    } else {
+        key_rows(
+            form,
+            app.backend().paths(),
+            Rect {
+                height: available.saturating_sub(GUIDANCE_ROWS) as u16,
+                ..area
+            },
+            columns.label,
+            theme,
+            hover,
+        )
+    };
+    let guidance_rows = if theme.dim { 0 } else { GUIDANCE_ROWS };
+    let spaced = available >= guidance_rows + key_rows.len() + gaps.len();
+    let key_start = gaps.last().copied().unwrap_or(0);
+    let key_count = key_rows.len();
+    rows.splice(key_start..key_start, key_rows);
+    if focused_row >= key_start {
+        focused_row += key_count;
+    }
+    if spaced {
+        for gap in gaps.into_iter().rev() {
+            let gap = if gap == key_start {
+                gap + key_count
+            } else {
+                gap
+            };
+            rows.insert(gap, (Line::default(), None));
+            focused_row += usize::from(focused_row >= gap);
+        }
+    }
+
     let start = if focused_row >= height {
         focused_row.saturating_sub(height.saturating_sub(2))
     } else {
         0
     };
-    let remaining = render_lines(frame, area, lines.into_iter().skip(start).collect());
-    for (rows, field, editable, scroll) in field_rows {
-        for line in rows.start.max(start)..rows.end.min(start + height) {
-            let rect = row(area, (line - start) as u16);
-            columns.add_hits(hits, rect, field, editable, scroll);
-        }
-    }
+    let lines = rows
+        .into_iter()
+        .skip(start)
+        .take(height)
+        .enumerate()
+        .map(|(i, (line, target))| {
+            let rect = row(area, i as u16);
+            match target {
+                Some(RowTarget::Field(field, editable, scroll)) => {
+                    columns.add_hits(hits, rect, field, editable, scroll);
+                }
+                Some(RowTarget::Key(index)) => {
+                    let rect = right_of(rect, columns.label);
+                    let selected = form.key_cursor() == Some(index);
+                    let t = intensity(hover, HoverKey::KeyRow(index));
+                    frame
+                        .buffer_mut()
+                        .set_style(rect, theme.hover_row(selected, t));
+                    hits.add(rect, ClickTarget::KeyRow(index));
+                }
+                None => {}
+            }
+            line
+        })
+        .collect();
+    let remaining = render_lines(frame, area, lines);
     if let Some(column) = cursor {
         let rect = row(area, (focused_row - start) as u16);
         if !rect.is_empty() {
@@ -184,10 +261,125 @@ pub(super) fn render<B: Backend>(
         }
     }
     if !theme.dim && start == 0 && remaining.height >= 2 {
-        let show_gap = u16::from(remaining.height >= 4);
+        let show_gap = u16::from(spaced && usize::from(remaining.height) > GUIDANCE_ROWS);
         rule(frame, row(remaining, show_gap), theme.rule);
         render_guidance(frame, app, form, below(remaining, show_gap + 1), theme);
     }
+}
+
+fn key_rows(
+    form: &FormState,
+    paths: &SshPaths,
+    area: Rect,
+    indent: u16,
+    theme: &Theme,
+    hover: HoverFrame<'_>,
+) -> Vec<(Line<'static>, Option<RowTarget>)> {
+    let keys = form.keys();
+    let available = usize::from(area.height);
+    let mut count = available.min(MAX_KEY_ROWS).min(keys.len());
+    if count == 0 {
+        return Vec::new();
+    }
+    let value = form.input(FormField::KeyFile).value();
+    let expanded = paths.expand_tilde(value);
+    let matching = keys
+        .iter()
+        .position(|key| key.path == expanded || value == paths.abbreviate_home(&key.path));
+    let selected = form.key_cursor().or(matching);
+    let offset = |count| selected.map_or(0, |index| (index + 1).saturating_sub(count));
+    if count == available && count > 1 && offset(count) + count < keys.len() {
+        count -= 1;
+    }
+    let start = offset(count);
+    let end = (start + count).min(keys.len());
+    let mut lines = Vec::with_capacity(count + 1);
+    for (index, key) in keys.iter().enumerate().take(end).skip(start) {
+        let focused = form.key_cursor() == Some(index);
+        let current = matching == Some(index);
+        let (marker, marker_style) = if focused {
+            ("› ", bold(theme.accent))
+        } else if current && form.key_cursor().is_none() {
+            ("● ", theme.text)
+        } else {
+            ("  ", theme.muted)
+        };
+        let style = if current { theme.text } else { theme.muted };
+        let t = intensity(hover, HoverKey::KeyRow(index));
+        let path = paths.abbreviate_home(&key.path);
+        let mut line = Line::from(vec![
+            Span::styled(marker, theme.selected(marker_style, focused)),
+            Span::styled(path, theme.hover_text(theme.selected(style, focused), t)),
+        ]);
+        line = indented(indent, line);
+        let remaining = usize::from(area.width).saturating_sub(line.width());
+        if let Some(public) = &key.public
+            && remaining > 1
+        {
+            let metadata = match public
+                .comment
+                .as_deref()
+                .filter(|comment| !comment.is_empty())
+            {
+                Some(comment) => format!("{} {comment}", public.key_type),
+                None => public.key_type.clone(),
+            };
+            let metadata = clip_cells(&metadata, (remaining - 1) as u16);
+            line.push_span(" ".repeat(remaining - metadata.width()));
+            line.push_span(Span::styled(
+                metadata.into_owned(),
+                theme.selected(theme.muted, focused),
+            ));
+        }
+        lines.push((line, Some(RowTarget::Key(index))));
+    }
+    if end < keys.len() && lines.len() < available {
+        let line = Line::from(Span::styled(
+            format!("… {} more", keys.len() - end),
+            theme.muted,
+        ));
+        lines.push((indented(indent, line), None));
+    }
+    lines
+}
+
+fn checkbox_line(
+    form: &FormState,
+    field: FormField,
+    label: Span<'static>,
+    width: u16,
+    theme: &Theme,
+    hover: f32,
+) -> Line<'static> {
+    let checked = form.is_checked(field);
+    let (value, note) = if field == FormField::InstallKey {
+        (
+            "Install the public key on the server",
+            Some(("asks for the server password once", theme.muted)),
+        )
+    } else {
+        (
+            "Disable password prompt (recommended)",
+            (checked && !form.is_checked(FormField::InstallKey))
+                .then_some(("make sure key login already works", theme.warn)),
+        )
+    };
+    let marker = if checked { "[x]" } else { "[ ]" };
+    let mut line = Line::from(vec![
+        label,
+        Span::styled(
+            format!("{marker} {value}"),
+            theme.hover_text(theme.text, hover),
+        ),
+    ]);
+    if !theme.dim
+        && let Some((note, style)) = note
+        && line.width() + 2 + note.width() <= usize::from(width)
+    {
+        line.push_span("  ");
+        line.push_span(Span::styled(note, style));
+    }
+    line
 }
 
 struct FieldColumns {
@@ -279,6 +471,8 @@ fn caption(field: FormField) -> &'static str {
         FormField::Address => "Address",
         FormField::Port => "Port",
         FormField::KeyFile => "Key file",
+        FormField::InstallKey => "Key login",
+        FormField::DisablePassword => "Password",
     }
 }
 
@@ -317,6 +511,7 @@ fn render_guidance<B: Backend>(
 ) {
     let mut lines = vec![Line::from(Span::styled("On enter", theme.muted))];
     let paths = app.backend().paths();
+    let install = form.is_checked(FormField::InstallKey);
     if let Some((field, error)) = app.form_first_error() {
         let action = if matches!(error, ValidationError::Empty { .. }) {
             "Fill in"
@@ -332,7 +527,11 @@ fn render_guidance<B: Backend>(
         let review = styled_wrapped(
             &format!("Review changes to {source}"),
             area.width.saturating_sub(4),
-            area.height,
+            if install {
+                area.height.saturating_sub(2).max(1)
+            } else {
+                area.height
+            },
             theme.text,
         );
         lines.extend(review.into_iter().enumerate().map(|(index, mut line)| {
@@ -340,6 +539,14 @@ fn render_guidance<B: Backend>(
             line.spans.insert(0, Span::styled(prefix, theme.muted));
             line
         }));
+        if install {
+            lines.extend(step(
+                2,
+                "Key",
+                vec![key_install_line(form, paths, area.width, theme)],
+                theme,
+            ));
+        }
     } else {
         let nickname = form.input(FormField::Nickname).value();
         let save = !nickname.is_empty();
@@ -350,7 +557,11 @@ fn render_guidance<B: Backend>(
             let mut save_lines = styled_wrapped(
                 &content,
                 area.width.saturating_sub(10),
-                area.height,
+                if install {
+                    area.height.saturating_sub(3).max(1)
+                } else {
+                    area.height
+                },
                 theme.text,
             );
             for line in &mut save_lines {
@@ -370,12 +581,22 @@ fn render_guidance<B: Backend>(
             }
             lines.extend(step(1, "Save", save_lines, theme));
         }
+        let mut next = if save { 2 } else { 1 };
+        if install {
+            lines.extend(step(
+                next,
+                "Key",
+                vec![key_install_line(form, paths, area.width, theme)],
+                theme,
+            ));
+            next += 1;
+        }
         if let Some(preview) = app.loaded_form_preview() {
             match preview {
                 Ok(command) => {
                     let command =
                         command_lines(&command, area.width.saturating_sub(10), area.height, theme);
-                    lines.extend(step(if save { 2 } else { 1 }, "Run", command, theme));
+                    lines.extend(step(next, "Run", command, theme));
                 }
                 Err(error) => {
                     let error = styled_wrapped(
@@ -409,6 +630,23 @@ fn render_guidance<B: Backend>(
         }
     }
     render_lines(frame, area, lines);
+}
+
+fn key_install_line(
+    form: &FormState,
+    paths: &SshPaths,
+    width: u16,
+    theme: &Theme,
+) -> Line<'static> {
+    let path = form.install_key_file().map_or_else(
+        || "<public key>".into(),
+        |key| paths.abbreviate_home(&keysetup::public_key_path(paths, key)),
+    );
+    let text = format!("install {path} on the server");
+    Line::from(Span::styled(
+        clip_cells(&text, width.saturating_sub(10)).into_owned(),
+        theme.text,
+    ))
 }
 
 fn step(

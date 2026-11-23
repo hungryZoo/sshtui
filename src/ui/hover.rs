@@ -16,7 +16,7 @@ pub enum HoverKey {
     NewRow,
     /// The entire field, including its label and input cells.
     FormField(FormField),
-    /// Row index in the key picker.
+    /// Row index in the form key list or key picker.
     KeyRow(usize),
     /// A key hint or another region that dispatches the same key.
     Key(KeyCode),

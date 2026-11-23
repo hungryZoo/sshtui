@@ -5,15 +5,21 @@ use std::path::Path;
 use crate::config::{DiffHunk, PendingWrite};
 use crate::keys::KeyInfo;
 
-use super::FormState;
+use super::{FormState, KeyInstall};
 
 const PAGE_LINES: usize = 10;
 
 #[derive(Debug)]
 pub(super) enum ConfirmAction {
-    Edit(FormState),
+    Edit {
+        form: FormState,
+        install: Option<Box<KeyInstall>>,
+    },
     Delete,
-    Forget { name: String, removed: usize },
+    Forget {
+        name: String,
+        removed: usize,
+    },
 }
 
 /// What a confirmation will do when accepted.
@@ -48,7 +54,8 @@ pub struct ConfirmState {
 
 impl ConfirmState {
     pub(super) fn new(pending: PendingWrite, alias: String, action: ConfirmAction) -> Self {
-        let choice = (!matches!(action, ConfirmAction::Edit(_))).then_some(ConfirmChoice::Cancel);
+        let choice =
+            (!matches!(action, ConfirmAction::Edit { .. })).then_some(ConfirmChoice::Cancel);
         Self {
             pending,
             action,
@@ -61,7 +68,7 @@ impl ConfirmState {
     /// Returns the confirmation title for the requested change.
     pub fn title(&self) -> String {
         match self.action {
-            ConfirmAction::Edit(_) => format!("Save {}", self.alias),
+            ConfirmAction::Edit { .. } => format!("Save {}", self.alias),
             ConfirmAction::Delete => format!("Delete {}", self.alias),
             ConfirmAction::Forget { .. } => format!("Forget host key for {}", self.alias),
         }
@@ -80,7 +87,7 @@ impl ConfirmState {
     /// Returns the kind of change awaiting confirmation.
     pub fn kind(&self) -> ConfirmKind {
         match self.action {
-            ConfirmAction::Edit(_) => ConfirmKind::Save,
+            ConfirmAction::Edit { .. } => ConfirmKind::Save,
             ConfirmAction::Delete => ConfirmKind::Delete,
             ConfirmAction::Forget { .. } => ConfirmKind::Forget,
         }
@@ -101,7 +108,7 @@ impl ConfirmState {
     /// Returns the destructive confirmation question with the display path.
     pub(crate) fn question(&self, path: &str) -> Option<String> {
         match &self.action {
-            ConfirmAction::Edit(_) => None,
+            ConfirmAction::Edit { .. } => None,
             ConfirmAction::Delete => Some(format!("Delete {} from {path}?", self.alias)),
             ConfirmAction::Forget { name, removed } => {
                 let entries = if *removed == 1 { "entry" } else { "entries" };

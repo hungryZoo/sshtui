@@ -486,10 +486,10 @@ fn new_form_shows_field_requirements_command_preview_and_help() {
             "1 Save  prod-web-3 to ~/.ssh/config",
             "2 Run   $ ssh prod-web-3",
             "Leave Nickname empty to connect once without saving.",
-            "enter  save & connect   tab next   ctrl+l pick key   ctrl+o browse   esc back",
+            "enter  save & connect   tab next   ↑↓ pick key   ctrl+o browse   esc back",
         ],
     );
-    assert_eq!(view.buffer()[(12, 16)].modifier, Modifier::BOLD);
+    assert_eq!(view.buffer()[(12, 19)].modifier, Modifier::BOLD);
     set_field(&mut app, FormField::Nickname, "");
     set_field(&mut app, FormField::KeyFile, "");
     set_field(&mut app, FormField::Port, "2222");
@@ -561,7 +561,7 @@ fn edit_form_shows_original_values_inheritance_and_shared_options() {
     assert_eq!(buffer[(53, 8)].fg, MUTED);
     assert_eq!(buffer[(53, 12)].fg, WARN);
     assert_eq!(buffer[(15, 12)].bg, BG);
-    assert_eq!(buffer[(2, 19)].fg, WARN);
+    assert_eq!(buffer[(2, 22)].fg, WARN);
 }
 
 #[test]
@@ -578,7 +578,7 @@ fn form_shows_the_unavailability_reason_and_hidden_files_hint() {
     contains(
         &view,
         &[
-            "ctrl+l pick key",
+            "↑↓ pick key",
             "ctrl+o browse",
             "Browse is unavailable in this session",
             "Hidden files: press Ctrl+H in the dialog",
@@ -619,13 +619,13 @@ fn long_wide_input_scrolls_without_hiding_the_cursor() {
 
     let view = draw(&app, 43, 20);
     let cursor = view.cursor_position();
-    assert_eq!(cursor, (40, 8).into());
+    assert_eq!(cursor, (40, 6).into());
     assert_eq!(view.buffer()[(cursor.x - 2, cursor.y)].symbol(), "끝");
 
     press(&mut app, KeyCode::Home);
     let view = draw(&app, 43, 20);
-    assert_eq!(view.cursor_position(), (14, 8).into());
-    assert_eq!(view.buffer()[(14, 8)].symbol(), "가");
+    assert_eq!(view.cursor_position(), (14, 6).into());
+    assert_eq!(view.buffer()[(14, 6)].symbol(), "가");
 }
 
 fn edit_confirmation() -> App<FakeBackend> {
@@ -1277,7 +1277,7 @@ fn form_places_nonempty_field_errors_directly_below_the_input() {
     );
     assert!(rows[12].is_empty());
     assert!(rows[13].contains("Key file"));
-    assert!(rows[17].contains("Fix Port to continue"));
+    assert!(rows[20].contains("Fix Port to continue"));
     let buffer = view.buffer();
     assert_eq!(buffer[(2, 10)].fg, ERROR);
     assert_eq!(buffer[(4, 10)].fg, ERROR);
@@ -1295,9 +1295,8 @@ fn form_hints_reflect_the_action_and_focused_field() {
     let view = draw(&app, 100, 28);
     let footer = &screen(&view)[26];
     assert!(
-        footer.contains(
-            "enter  save & connect   tab next   ctrl+l pick key   ctrl+o browse   esc back"
-        )
+        footer
+            .contains("enter  save & connect   tab next   ↑↓ pick key   ctrl+o browse   esc back")
     );
     assert!(!footer.contains("ctrl+u"));
     assert_eq!(view.buffer()[(2, 26)].bg, ACCENT);
@@ -1305,7 +1304,7 @@ fn form_hints_reflect_the_action_and_focused_field() {
     let view = draw(&app, 100, 28);
     let footer = &screen(&view)[26];
     assert!(footer.contains("tab next   ctrl+u clear field   esc back"));
-    assert!(!footer.contains("ctrl+l") && !footer.contains("ctrl+o"));
+    assert!(!footer.contains("↑↓ pick key") && !footer.contains("ctrl+o"));
 }
 
 #[test]
@@ -1314,14 +1313,14 @@ fn form_guidance_styles_missing_fields_and_live_commands() {
     let view = draw(&app, 100, 28);
     let rows = screen(&view);
     assert!(rows[9].is_empty());
-    assert!(rows[16].contains("Fill in Address to continue"));
-    assert_eq!(view.buffer()[(4, 16)].fg, ERROR);
-    assert_eq!(rows[14].trim_start(), "─".repeat(96));
+    assert!(rows[19].contains("Fill in Address to continue"));
+    assert_eq!(view.buffer()[(4, 19)].fg, ERROR);
+    assert_eq!(rows[17].trim_start(), "─".repeat(96));
     set_field(&mut app, FormField::Address, "www.example.com");
     let view = draw(&app, 100, 28);
-    assert!(screen(&view)[16].ends_with("1 Run   $ ssh www.example.com"));
-    assert_eq!(view.buffer()[(12, 16)].fg, MUTED);
-    assert_eq!(view.buffer()[(14, 16)].fg, ACCENT);
+    assert!(screen(&view)[19].ends_with("1 Run   $ ssh www.example.com"));
+    assert_eq!(view.buffer()[(12, 19)].fg, MUTED);
+    assert_eq!(view.buffer()[(14, 19)].fg, ACCENT);
 }
 
 #[test]
@@ -1643,8 +1642,8 @@ fn short_forms_keep_the_fields_and_cursor_before_guidance() {
     let app = mockup_new_form();
     for (height, expected) in [
         (28, [true, true, true]),
-        (22, [true, true, false]),
-        (17, [true, false, false]),
+        (22, [true, true, true]),
+        (17, [true, true, false]),
         (11, [false, false, false]),
         (8, [false, false, false]),
     ] {
@@ -1664,7 +1663,7 @@ fn short_forms_keep_the_fields_and_cursor_before_guidance() {
         let cursor = view.cursor_position();
         assert!(rows[usize::from(cursor.y)].contains("Key file"));
         assert_eq!(view.buffer()[(cursor.x, cursor.y)].bg, INPUT_FOCUS);
-        assert!(visible.contains("ctrl+l pick key"));
+        assert!(visible.contains("↑↓ pick key"));
     }
 }
 
@@ -1973,8 +1972,8 @@ fn form_key_hints_are_hit_targets_including_disabled_browse() {
         (&edit, " enter  review changes"),
     ] {
         let (view, hits) = draw_with_hits(app, 100, 28);
+        assert_text_hit(&view, &hits, "↑↓ pick key", None);
         for (text, code) in [
-            ("ctrl+l pick key", KeyCode::F(2)),
             ("ctrl+o browse", KeyCode::F(3)),
             (submit, KeyCode::Enter),
             ("esc back", KeyCode::Esc),
@@ -2422,4 +2421,242 @@ fn hover_renders_at_small_sizes_in_each_screen_mode() {
             assert_eq!(hover_hits, draw_with_hits(app, width, height).1);
         }
     }
+}
+
+#[test]
+fn new_form_shows_checkbox_labels_states_focus_and_notes() {
+    let mut app = mockup_new_form();
+    let view = draw(&app, 100, 28);
+    let rows = screen(&view);
+    assert_eq!(
+        rows[14],
+        "    Key login  [ ] Install the public key on the server  asks for the server password once"
+    );
+    assert_eq!(
+        rows[15],
+        "    Password   [ ] Disable password prompt (recommended)"
+    );
+    let buffer = view.buffer();
+    assert_eq!(buffer[(15, 14)].bg, BG);
+    assert_eq!(buffer[(15, 15)].bg, BG);
+    assert_eq!(buffer[(57, 14)].fg, MUTED);
+
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char(' '));
+    let view = draw(&app, 100, 28);
+    let rows = screen(&view);
+    assert_eq!(
+        rows[15],
+        "  › Password   [x] Disable password prompt (recommended)  make sure key login already works"
+    );
+    let warning = rows[15].find("make sure").unwrap() - ('›'.len_utf8() - 1);
+    assert_eq!(view.buffer()[(warning as u16, 15)].fg, WARN);
+    assert_eq!(view.buffer()[(2, 15)].fg, ACCENT);
+
+    press(&mut app, KeyCode::BackTab);
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    assert_text_hit(
+        &view,
+        &hits,
+        "space toggle",
+        Some(ClickTarget::Key(KeyCode::Char(' '))),
+    );
+    app.handle_click(ClickTarget::Key(KeyCode::Char(' ')), false);
+    let view = draw(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[14].starts_with("  › Key login  [x] Install the public key on the server"));
+    assert!(rows[15].ends_with("[x] Disable password prompt (recommended)"));
+    assert!(rows[26].contains("enter  save & connect   tab next   space toggle   esc back"));
+}
+
+#[test]
+fn form_key_rows_show_current_and_focused_keys_and_their_hit_targets() {
+    let mut app = new_form_values(FakeBackend::new("").with_keys());
+    set_field(&mut app, FormField::KeyFile, "~/.ssh/id_b");
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[12].contains("Key file"));
+    assert!(rows[13].starts_with("                 ~/.ssh/id_a"));
+    assert!(rows[14].starts_with("               ● ~/.ssh/id_b"));
+    assert!(rows[13].ends_with("ssh-ed25519 test key"));
+    assert_eq!(view.buffer()[(17, 13)].fg, MUTED);
+    assert_eq!(view.buffer()[(17, 14)].fg, TEXT);
+    assert_text_hit(&view, &hits, "~/.ssh/id_a", Some(ClickTarget::KeyRow(0)));
+    assert_eq!(hits.hit(15, 14), Some(&ClickTarget::KeyRow(1)));
+    assert_eq!(
+        hits.hit(15, 14).and_then(ClickTarget::hover_key),
+        Some(HoverKey::KeyRow(1))
+    );
+
+    app.handle_click(hits.hit(15, 13).unwrap().clone(), false);
+    let view = draw(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[13].starts_with("               › ~/.ssh/id_a"));
+    assert!(!rows[14].contains('●'));
+    assert_eq!(view.buffer()[(15, 13)].fg, ACCENT);
+    assert_eq!(view.buffer()[(17, 13)].bg, ROW);
+    assert_eq!(view.buffer()[(17, 13)].fg, TEXT);
+}
+
+#[test]
+fn form_key_rows_limit_the_window_and_scroll_to_the_cursor_or_current_value() {
+    let mut backend = FakeBackend::new("");
+    backend.keys = (0..6)
+        .map(|index| {
+            let name = format!("test_key_{index}");
+            KeyInfo {
+                path: backend.paths.ssh_dir().join(&name),
+                file_name: name,
+                public: None,
+            }
+        })
+        .collect();
+    let mut app = App::new(backend);
+    set_field(&mut app, FormField::KeyFile, "");
+    let view = draw(&app, 100, 28);
+    let rows = screen(&view);
+    let first = rows
+        .iter()
+        .position(|line| line.contains("Key file"))
+        .unwrap()
+        + 1;
+    for index in 0..4 {
+        assert!(rows[first + index].ends_with(&format!("~/.ssh/test_key_{index}")));
+    }
+    assert!(rows[first + 4].ends_with("… 2 more"));
+    assert_eq!(view.buffer()[(15, (first + 4) as u16)].fg, MUTED);
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Down);
+    }
+    let (view, hits) = draw_with_hits(&app, 100, 28);
+    let rows = screen(&view);
+    assert!(rows[first].ends_with("~/.ssh/test_key_1"));
+    assert!(rows[first + 3].ends_with("› ~/.ssh/test_key_4"));
+    assert!(rows[first + 4].ends_with("… 1 more"));
+    assert_eq!(
+        hits.hit(15, (first + 3) as u16),
+        Some(&ClickTarget::KeyRow(4))
+    );
+
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Tab);
+    let view = draw(&app, 100, 28);
+    contains(&view, &["● ~/.ssh/test_key_5"]);
+    assert!(!screen(&view).join("\n").contains("more"));
+}
+
+#[test]
+fn compact_form_keeps_the_fields_keys_checkboxes_and_enter_guidance_in_order() {
+    let mut app = new_form_values(FakeBackend::new("").with_keys());
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char(' '));
+    let view = draw(&app, 80, 24);
+    let rows = screen(&view);
+    for (index, content) in [
+        "Nickname",
+        "User",
+        "Address",
+        "Port",
+        "Key file",
+        "● ~/.ssh/id_a",
+        "~/.ssh/id_b",
+        "Key login",
+        "Password",
+        "───",
+        "On enter",
+        "1 Save",
+        "2 Key   install ~/.ssh/id_a.pub on the server",
+        "3 Run",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(rows[4 + index].contains(content), "{rows:#?}");
+    }
+}
+
+#[test]
+fn form_key_rows_follow_validation_and_are_hidden_under_the_picker_or_when_read_only() {
+    let mut app = App::new(FakeBackend::new("").with_keys());
+    set_field(&mut app, FormField::KeyFile, "\"bad");
+    let view = draw(&app, 100, 28);
+    let rows = screen(&view);
+    let field = rows
+        .iter()
+        .position(|line| line.contains("Key file"))
+        .unwrap();
+    assert!(rows[field + 1].contains("Key file must not contain"));
+    assert!(rows[field + 2].contains("~/.ssh/id_a"));
+    press(&mut app, KeyCode::F(2));
+    let view = draw(&app, 100, 28);
+    assert_eq!(
+        screen(&view)
+            .iter()
+            .filter(|line| line.contains("~/.ssh/id_a"))
+            .count(),
+        1
+    );
+
+    let mut app = App::new(FakeBackend::new(
+        "Host web\n  IdentityFile ~/first\n  IdentityFile ~/second\n  PasswordAuthentication no extra\n",
+    ).with_keys());
+    press(&mut app, KeyCode::Char('e'));
+    let view = draw(&app, 100, 28);
+    contains(
+        &view,
+        &[
+            "IdentityFile ~/first",
+            "PasswordAuthentication no extra",
+            "read-only",
+        ],
+    );
+    assert!(!screen(&view).join("\n").contains("~/.ssh/id_a"));
+}
+
+#[test]
+fn enter_guidance_includes_the_key_install_step_for_direct_and_edited_connections() {
+    let mut app = new_form_values(FakeBackend::new(""));
+    set_field(&mut app, FormField::Nickname, "");
+    app.handle_click(
+        ClickTarget::FormField {
+            field: FormField::InstallKey,
+            column: u16::MAX,
+        },
+        false,
+    );
+    app.handle_click(
+        ClickTarget::FormField {
+            field: FormField::DisablePassword,
+            column: u16::MAX,
+        },
+        false,
+    );
+    let view = draw(&app, 100, 28);
+    contains(
+        &view,
+        &[
+            "1 Key   install ~/.ssh/id_ed25519.pub on the server",
+            "2 Run   $ ssh -o PasswordAuthentication=no",
+        ],
+    );
+
+    let mut app = App::new(FakeBackend::new(HOSTS));
+    press(&mut app, KeyCode::Char('e'));
+    app.handle_click(
+        ClickTarget::FormField {
+            field: FormField::InstallKey,
+            column: u16::MAX,
+        },
+        false,
+    );
+    let view = draw(&app, 100, 28);
+    contains(
+        &view,
+        &[
+            "1 Review changes to ~/.ssh/config",
+            "2 Key   install ~/.ssh/first.pub on the server",
+        ],
+    );
 }

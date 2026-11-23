@@ -1,10 +1,12 @@
 //! Form values, original block fields, and validation.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::{
     BlockFields, Change, FieldState, HostEntry, NewHost, OptionChanges, OptionKey,
 };
+use crate::keys::KeyInfo;
+use crate::paths::SshPaths;
 use crate::ssh::args::ConnectTarget;
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig};
 use crate::validate::{
@@ -12,7 +14,7 @@ use crate::validate::{
     validate_nickname, validate_user,
 };
 
-use super::TextInput;
+use super::{TextInput, is_ctrl, is_plain};
 
 /// A field in the connection form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,25 +24,34 @@ pub enum FormField {
     Address,
     Port,
     KeyFile,
+    InstallKey,
+    DisablePassword,
 }
 
 impl FormField {
     /// All fields in focus order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Nickname,
         Self::User,
         Self::Address,
         Self::Port,
         Self::KeyFile,
+        Self::InstallKey,
+        Self::DisablePassword,
     ];
+
+    pub(crate) fn is_checkbox(self) -> bool {
+        matches!(self, Self::InstallKey | Self::DisablePassword)
+    }
 
     fn option(self) -> Option<OptionKey> {
         match self {
-            Self::Nickname => None,
+            Self::Nickname | Self::InstallKey => None,
             Self::User => Some(OptionKey::User),
             Self::Address => Some(OptionKey::HostName),
             Self::Port => Some(OptionKey::Port),
             Self::KeyFile => Some(OptionKey::IdentityFile),
+            Self::DisablePassword => Some(OptionKey::PasswordAuthentication),
         }
     }
 }
@@ -69,6 +80,10 @@ pub struct FormState {
     kind: FormKind,
     fields: Box<[FormInput; FormField::ALL.len()]>,
     focus: usize,
+    install_key: bool,
+    disable_password: bool,
+    keys: Vec<KeyInfo>,
+    key_cursor: Option<usize>,
 }
 
 impl FormState {
@@ -77,6 +92,10 @@ impl FormState {
             kind: FormKind::New,
             fields: Box::default(),
             focus: 0,
+            install_key: false,
+            disable_password: false,
+            keys: Vec::new(),
+            key_cursor: None,
         }
     }
 
@@ -84,12 +103,17 @@ impl FormState {
         entry: HostEntry,
         original: BlockFields,
         effective: Option<&EffectiveConfig>,
+        keys: Vec<KeyInfo>,
     ) -> Self {
-        let mut form = Self::new();
+        let mut form = Self::new().with_keys(keys);
+        form.disable_password = password_disabled(original.get(OptionKey::PasswordAuthentication));
         form.fields[FormField::Nickname as usize]
             .text
             .set(entry.name.clone());
         for field in FormField::ALL {
+            if field.is_checkbox() {
+                continue;
+            }
             let Some(option) = field.option() else {
                 continue;
             };
@@ -115,6 +139,11 @@ impl FormState {
         form
     }
 
+    pub(super) fn with_keys(mut self, keys: Vec<KeyInfo>) -> Self {
+        self.keys = keys;
+        self
+    }
+
     /// Returns the form kind and original edit data when applicable.
     pub fn kind(&self) -> &FormKind {
         &self.kind
@@ -123,6 +152,35 @@ impl FormState {
     /// Returns the currently focused field.
     pub fn focus(&self) -> FormField {
         FormField::ALL[self.focus]
+    }
+
+    /// Returns whether a checkbox is checked.
+    pub fn is_checked(&self, field: FormField) -> bool {
+        match field {
+            FormField::InstallKey => self.install_key,
+            FormField::DisablePassword => self.disable_password,
+            _ => false,
+        }
+    }
+
+    /// Returns the keys discovered when the form opened.
+    pub fn keys(&self) -> &[KeyInfo] {
+        &self.keys
+    }
+
+    /// Returns the highlighted key index, or None when the input is active.
+    pub fn key_cursor(&self) -> Option<usize> {
+        self.key_cursor
+    }
+
+    pub(crate) fn install_key_file(&self) -> Option<&str> {
+        let value = self.value(FormField::KeyFile);
+        if value.is_empty() {
+            self.placeholder(FormField::KeyFile)
+                .filter(|value| !value.is_empty())
+        } else {
+            Some(value)
+        }
     }
 
     /// Returns the input value and cursor for a field.
@@ -185,6 +243,7 @@ impl FormState {
             FormField::Address => validate_address(value),
             FormField::Port => parse_port(value).map(|_| ()),
             FormField::KeyFile => validate_key_file(value),
+            FormField::InstallKey | FormField::DisablePassword => Ok(()),
         }
         .err()
     }
@@ -203,7 +262,7 @@ impl FormState {
                 address: self.value(FormField::Address).into(),
                 port: self.value(FormField::Port).into(),
                 key_file: self.value(FormField::KeyFile).into(),
-                disable_password: false,
+                disable_password: self.disable_password,
             }
         } else {
             ConnectTarget::Alias(nickname.into())
@@ -221,18 +280,24 @@ impl FormState {
             user: optional(FormField::User),
             port: optional(FormField::Port),
             identity_file: optional(FormField::KeyFile),
-            password_authentication: None,
+            password_authentication: self.disable_password.then(|| "no".into()),
         }
     }
 
     pub(super) fn option_changes(&self, original: &BlockFields) -> OptionChanges {
         let change = |key, field| Change::from_form(original.get(key), self.value(field));
+        let password = original.get(OptionKey::PasswordAuthentication);
+        let password_authentication = match (self.disable_password, password_disabled(password)) {
+            (true, false) => Change::Set("no".into()),
+            (false, true) => Change::Remove,
+            _ => Change::Keep,
+        };
         OptionChanges {
             host_name: change(OptionKey::HostName, FormField::Address),
             user: change(OptionKey::User, FormField::User),
             port: change(OptionKey::Port, FormField::Port),
             identity_file: change(OptionKey::IdentityFile, FormField::KeyFile),
-            password_authentication: Change::Keep,
+            password_authentication,
         }
     }
 
@@ -253,20 +318,69 @@ impl FormState {
     }
 
     pub(super) fn next_field(&mut self) {
-        self.focus = (self.focus + 1) % FormField::ALL.len();
+        self.set_focus(FormField::ALL[(self.focus + 1) % FormField::ALL.len()]);
     }
 
     pub(super) fn previous_field(&mut self) {
-        self.focus = (self.focus + FormField::ALL.len() - 1) % FormField::ALL.len();
+        self.set_focus(
+            FormField::ALL[(self.focus + FormField::ALL.len() - 1) % FormField::ALL.len()],
+        );
     }
 
     pub(super) fn set_focus(&mut self, field: FormField) {
         self.focus = field as usize;
+        self.key_cursor = None;
+    }
+
+    pub(super) fn move_vertical(&mut self, down: bool, paths: &SshPaths) {
+        if self.focus() == FormField::KeyFile
+            && !self.is_read_only(FormField::KeyFile)
+            && !self.keys.is_empty()
+        {
+            match (down, self.key_cursor) {
+                (true, cursor) => {
+                    if self.select_key(cursor.map_or(0, |i| i + 1), paths) {
+                        return;
+                    }
+                }
+                (false, Some(0)) => {
+                    self.key_cursor = None;
+                    return;
+                }
+                (false, Some(index)) => {
+                    self.select_key(index - 1, paths);
+                    return;
+                }
+                (false, None) => {}
+            }
+        }
+        if down {
+            self.next_field();
+        } else {
+            self.previous_field();
+        }
+    }
+
+    pub(super) fn select_key(&mut self, index: usize, paths: &SshPaths) -> bool {
+        let Some(key) = self
+            .keys
+            .get(index)
+            .filter(|_| !self.is_read_only(FormField::KeyFile))
+        else {
+            return false;
+        };
+        let path = paths.abbreviate_home(&key.path);
+        self.set_focus(FormField::KeyFile);
+        self.set_key_file(path);
+        self.key_cursor = Some(index);
+        true
     }
 
     pub(super) fn click_field(&mut self, field: FormField, column: u16) {
         self.set_focus(field);
-        if !self.is_read_only(field) {
+        if field.is_checkbox() {
+            self.toggle_checkbox();
+        } else if !self.is_read_only(field) {
             let column = if column == u16::MAX {
                 usize::MAX
             } else {
@@ -277,19 +391,50 @@ impl FormState {
     }
 
     pub(super) fn handle_input(&mut self, key: KeyEvent) {
-        if !self.is_read_only(self.focus()) {
+        if self.focus().is_checkbox() {
+            if is_plain(key) && key.code == KeyCode::Char(' ') {
+                self.toggle_checkbox();
+            }
+        } else if !self.is_read_only(self.focus()) {
+            if is_ctrl(key, 'u')
+                || (is_plain(key)
+                    && matches!(
+                        key.code,
+                        KeyCode::Char(_)
+                            | KeyCode::Backspace
+                            | KeyCode::Delete
+                            | KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Home
+                            | KeyCode::End
+                    ))
+            {
+                self.key_cursor = None;
+            }
             self.fields[self.focus].text.handle_key(key);
         }
     }
 
+    fn toggle_checkbox(&mut self) {
+        match self.focus() {
+            FormField::InstallKey => self.install_key = !self.install_key,
+            FormField::DisablePassword if !self.is_read_only(FormField::DisablePassword) => {
+                self.disable_password = !self.disable_password;
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn paste(&mut self, text: &str) {
-        if !self.is_read_only(self.focus()) {
+        if !self.focus().is_checkbox() && !self.is_read_only(self.focus()) {
+            self.key_cursor = None;
             self.fields[self.focus].text.paste(text);
         }
     }
 
     pub(super) fn set_key_file(&mut self, value: String) {
         if !self.is_read_only(FormField::KeyFile) {
+            self.key_cursor = None;
             self.fields[FormField::KeyFile as usize].text.set(value);
         }
     }
@@ -319,4 +464,8 @@ impl FormState {
                 .map(|host| host.name.as_str()),
         )
     }
+}
+
+fn password_disabled(state: &FieldState) -> bool {
+    matches!(state, FieldState::Value(value) if value.eq_ignore_ascii_case("no"))
 }

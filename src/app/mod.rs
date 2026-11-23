@@ -19,6 +19,7 @@ use crate::dialog::PickOutcome;
 use crate::known_hosts;
 use crate::ssh::args::{ArgsError, ConnectTarget, config_file_args, connect_args, preview};
 use crate::ssh::effective::{EffectiveConfig, ExpectedConfig, find_mismatches};
+use crate::ssh::keysetup;
 use crate::update::UpdatePlan;
 use crate::validate::ValidationError;
 
@@ -44,6 +45,29 @@ pub enum Exit {
     Update(UpdatePlan),
 }
 
+/// A key installation that must run outside the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyInstall {
+    /// Alias or address shown to the user.
+    pub label: String,
+    /// Arguments for ssh.
+    pub args: Vec<OsString>,
+    /// The public key line sent on stdin.
+    pub public_key: String,
+}
+
+enum KeyInstallAfter {
+    Direct,
+    Add,
+    Edit(ExpectedConfig),
+}
+
+struct PendingKeyInstall {
+    label: String,
+    request: Option<KeyInstall>,
+    after: KeyInstallAfter,
+}
+
 /// Something on screen that can be clicked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickTarget {
@@ -58,7 +82,7 @@ pub enum ClickTarget {
         /// Column including horizontal scrolling, or `u16::MAX` for the end.
         column: u16,
     },
-    /// Row index in the key picker.
+    /// Row index in the form key list or key picker.
     KeyRow(usize),
     /// A button or hint that acts like an unmodified key press.
     Key(KeyCode),
@@ -108,6 +132,7 @@ pub struct App<B: Backend> {
     exit: Option<Exit>,
     full_redraw: bool,
     update_plan: Option<UpdatePlan>,
+    key_install: Option<PendingKeyInstall>,
 }
 
 impl<B: Backend> App<B> {
@@ -123,19 +148,23 @@ impl<B: Backend> App<B> {
             status: None,
             exit: None,
             full_redraw: false,
+            key_install: None,
         };
         app.load_config();
         let last_host = app.backend.last_host();
         app.reload_list(last_host.as_deref());
         if app.config.hosts.is_empty() {
-            app.mode = Mode::Form(FormState::new());
+            app.mode = app.new_form();
         }
         app
     }
 
     /// Handles a press or repeat event on the active screen.
     pub fn handle_key(&mut self, key: KeyEvent) {
-        if self.exit.is_some() || !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        if self.exit.is_some()
+            || self.key_install.is_some()
+            || !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        {
             return;
         }
         self.status = None;
@@ -157,7 +186,7 @@ impl<B: Backend> App<B> {
 
     /// Handles a left click, with `double` set for a second click on the same target.
     pub fn handle_click(&mut self, target: ClickTarget, double: bool) {
-        if self.exit.is_some() {
+        if self.exit.is_some() || self.key_install.is_some() {
             return;
         }
 
@@ -187,6 +216,12 @@ impl<B: Backend> App<B> {
                 form.click_field(field, column);
                 return;
             }
+            (Mode::Form(form), ClickTarget::KeyRow(index)) => {
+                if form.select_key(index, self.backend.paths()) {
+                    self.status = None;
+                }
+                return;
+            }
             (Mode::KeyPicker(picker), ClickTarget::KeyRow(index))
                 if index < picker.keys().len() =>
             {
@@ -214,7 +249,7 @@ impl<B: Backend> App<B> {
 
     /// Inserts a bracketed paste into the focused form input or active filter.
     pub fn handle_paste(&mut self, text: &str) {
-        if self.exit.is_some() {
+        if self.exit.is_some() || self.key_install.is_some() {
             return;
         }
         match &mut self.mode {
@@ -230,6 +265,70 @@ impl<B: Backend> App<B> {
     /// Returns the requested event-loop exit, if any.
     pub fn exit(&self) -> Option<&Exit> {
         self.exit.as_ref()
+    }
+
+    /// Returns the installation waiting to run, once.
+    pub fn take_key_install(&mut self) -> Option<KeyInstall> {
+        self.key_install.as_mut()?.request.take()
+    }
+
+    /// Reports the result of the installation taken earlier.
+    pub fn finish_key_install(&mut self, result: Result<i32, String>) {
+        let Some(PendingKeyInstall { label, after, .. }) = self
+            .key_install
+            .take_if(|pending| pending.request.is_none())
+        else {
+            return;
+        };
+        let error = match result {
+            Ok(0) => None,
+            Ok(code) => Some(format!(
+                "Key install failed for {label} (ssh exit code {code})"
+            )),
+            Err(error) => Some(format!("Key install failed for {label}: {error}")),
+        };
+        if let Some(error) = error {
+            if matches!(after, KeyInstallAfter::Add) {
+                if self
+                    .list
+                    .selected(&self.config)
+                    .is_none_or(|entry| entry.name != label)
+                {
+                    self.list.clear_filter(&self.config);
+                    self.reload_list(Some(&label));
+                }
+                self.mode = Mode::List;
+            }
+            self.set_status(StatusLevel::Error, error);
+            return;
+        }
+        match after {
+            KeyInstallAfter::Direct => {
+                if let Mode::Form(form) = &self.mode {
+                    self.connect(form.target());
+                }
+            }
+            KeyInstallAfter::Add => {
+                if let Mode::Form(form) = std::mem::replace(&mut self.mode, Mode::List) {
+                    self.mode = self.finish_add_host(form, label);
+                }
+            }
+            KeyInstallAfter::Edit(expected) => {
+                self.set_status(
+                    StatusLevel::Info,
+                    format!("Installed the public key on {label}"),
+                );
+                self.mode = self.edit_result(&label, &expected);
+            }
+        }
+    }
+
+    fn queue_key_install(&mut self, request: KeyInstall, after: KeyInstallAfter) {
+        self.key_install = Some(PendingKeyInstall {
+            label: request.label.clone(),
+            request: Some(request),
+            after,
+        });
     }
 
     /// Returns true once after a native file dialog has closed.
@@ -462,7 +561,7 @@ impl<B: Backend> App<B> {
             KeyCode::Home | KeyCode::Char('g') => self.list.select(0),
             KeyCode::End | KeyCode::Char('G') => self.list.select(self.list.last_host_index()),
             KeyCode::Enter if !self.new_row_selected() => self.connect_selected(),
-            KeyCode::Enter | KeyCode::Char('n') => return Mode::Form(FormState::new()),
+            KeyCode::Enter | KeyCode::Char('n') => return self.new_form(),
             KeyCode::Char('e') => return self.edit_selected(),
             KeyCode::Char('d') => return self.delete_selected(),
             KeyCode::Char('x') => return self.forget_selected(),
@@ -516,6 +615,10 @@ impl<B: Backend> App<B> {
         Some(entry.clone())
     }
 
+    fn new_form(&self) -> Mode {
+        Mode::Form(FormState::new().with_keys(self.backend.discover_keys()))
+    }
+
     fn edit_selected(&mut self) -> Mode {
         let Some(entry) = self.writable_selection() else {
             return Mode::List;
@@ -531,7 +634,12 @@ impl<B: Backend> App<B> {
             Ok(original) => {
                 let effective = self.list.selected_effective(&self.config);
                 let values = effective.and_then(|result| result.as_ref().ok());
-                Mode::Form(FormState::edit(entry, original, values))
+                Mode::Form(FormState::edit(
+                    entry,
+                    original,
+                    values,
+                    self.backend.discover_keys(),
+                ))
             }
             Err(error) => {
                 self.set_status(StatusLevel::Error, error.to_string());
@@ -612,8 +720,11 @@ impl<B: Backend> App<B> {
                 KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     form.previous_field()
                 }
-                KeyCode::BackTab | KeyCode::Up => form.previous_field(),
-                KeyCode::Tab | KeyCode::Down => form.next_field(),
+                KeyCode::BackTab => form.previous_field(),
+                KeyCode::Tab => form.next_field(),
+                KeyCode::Up | KeyCode::Down => {
+                    form.move_vertical(key.code == KeyCode::Down, self.backend.paths());
+                }
                 KeyCode::Enter => return self.submit(form),
                 KeyCode::Esc => {
                     if self.config.hosts.is_empty() {
@@ -653,25 +764,67 @@ impl<B: Backend> App<B> {
             return Mode::Form(form);
         }
 
+        let public_key = if form.is_checked(FormField::InstallKey) {
+            let result = form
+                .install_key_file()
+                .ok_or_else(|| "Key login needs a key file".into())
+                .and_then(|path| self.backend.read_public_key(path));
+            match result {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    form.set_focus(FormField::KeyFile);
+                    self.set_status(StatusLevel::Error, error);
+                    return Mode::Form(form);
+                }
+            }
+        } else {
+            None
+        };
+
+        if matches!(form.kind(), FormKind::New) && !form.value(FormField::Nickname).is_empty() {
+            return self.add_host(form, public_key);
+        }
+
+        let target = form.target();
+        let install = match public_key {
+            Some(key) => match self.build_key_install(&target, key) {
+                Ok(install) => Some(install),
+                Err(error) => {
+                    self.set_status(StatusLevel::Error, error.to_string());
+                    return Mode::Form(form);
+                }
+            },
+            None => None,
+        };
         let nickname = form.value(FormField::Nickname);
         match form.kind() {
-            FormKind::New if nickname.is_empty() => {
-                self.connect(form.target());
+            FormKind::New => {
+                if let Some(install) = install {
+                    self.queue_key_install(install, KeyInstallAfter::Direct);
+                } else {
+                    self.connect(target);
+                }
                 Mode::Form(form)
             }
-            FormKind::New => self.add_host(form),
             FormKind::Edit { entry, original } => {
                 let new_name = (entry.name != nickname).then_some(nickname);
                 let changes = form.option_changes(original);
                 match plan_edit(&self.config, entry, new_name, &changes) {
                     Ok(pending) if pending.is_noop() => {
-                        self.set_status(StatusLevel::Info, "No changes");
+                        if let Some(install) = install {
+                            self.queue_key_install(install, KeyInstallAfter::Edit(form.expected()));
+                        } else {
+                            self.set_status(StatusLevel::Info, "No changes");
+                        }
                         Mode::List
                     }
                     Ok(pending) => Mode::Confirm(ConfirmState::new(
                         pending,
                         nickname.to_owned(),
-                        ConfirmAction::Edit(form),
+                        ConfirmAction::Edit {
+                            form,
+                            install: install.map(Box::new),
+                        },
                     )),
                     Err(error) => {
                         self.set_status(StatusLevel::Error, error.to_string());
@@ -682,7 +835,25 @@ impl<B: Backend> App<B> {
         }
     }
 
-    fn add_host(&mut self, form: FormState) -> Mode {
+    fn build_key_install(
+        &self,
+        target: &ConnectTarget,
+        public_key: String,
+    ) -> Result<KeyInstall, ArgsError> {
+        let label = match target {
+            ConnectTarget::Alias(alias) => alias,
+            ConnectTarget::Direct { address, .. } => address,
+        };
+        let args =
+            keysetup::install_args(self.backend.paths(), &self.backend.config_prefix(), target)?;
+        Ok(KeyInstall {
+            label: label.clone(),
+            args,
+            public_key,
+        })
+    }
+
+    fn add_host(&mut self, form: FormState, public_key: Option<String>) -> Mode {
         let host = form.new_host();
         let pending = match plan_add(self.backend.paths(), &self.config, &host) {
             Ok(pending) => pending,
@@ -695,12 +866,19 @@ impl<B: Backend> App<B> {
         match self.backend.commit(&pending) {
             Ok(_) => {
                 self.reload(Some(&host.name));
-                let mismatches = self.mismatch_lines(&host.name, &form.expected());
-                if mismatches.is_empty() {
-                    self.connect(ConnectTarget::Alias(host.name));
-                    Mode::Form(form)
+                if let Some(key) = public_key {
+                    match self.build_key_install(&ConnectTarget::Alias(host.name), key) {
+                        Ok(install) => {
+                            self.queue_key_install(install, KeyInstallAfter::Add);
+                            Mode::Form(form)
+                        }
+                        Err(error) => {
+                            self.set_status(StatusLevel::Error, error.to_string());
+                            Mode::List
+                        }
+                    }
                 } else {
-                    Mode::Notice(NoticeState::new(mismatches, Some(host.name)))
+                    self.finish_add_host(form, host.name)
                 }
             }
             Err(WriteError::Stale { path }) => {
@@ -721,6 +899,16 @@ impl<B: Backend> App<B> {
         }
     }
 
+    fn finish_add_host(&mut self, form: FormState, alias: String) -> Mode {
+        let mismatches = self.mismatch_lines(&alias, &form.expected());
+        if mismatches.is_empty() {
+            self.connect(ConnectTarget::Alias(alias));
+            Mode::Form(form)
+        } else {
+            Mode::Notice(NoticeState::new(mismatches, Some(alias)))
+        }
+    }
+
     fn handle_confirm_key(&mut self, mut confirm: ConfirmState, key: KeyEvent) -> Mode {
         if is_plain(key) {
             match key.code {
@@ -730,7 +918,7 @@ impl<B: Backend> App<B> {
                 }
                 KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
                     return match confirm.action {
-                        ConfirmAction::Edit(form) => Mode::Form(form),
+                        ConfirmAction::Edit { form, .. } => Mode::Form(form),
                         ConfirmAction::Delete | ConfirmAction::Forget { .. } => Mode::List,
                     };
                 }
@@ -757,8 +945,8 @@ impl<B: Backend> App<B> {
             ..
         } = confirm;
         let result = self.backend.commit(&pending);
-        let (verb, form) = match action {
-            ConfirmAction::Edit(form) => ("Saved", Some(form)),
+        let (verb, edit) = match action {
+            ConfirmAction::Edit { form, install } => ("Saved", Some((form, install))),
             ConfirmAction::Delete => ("Deleted", None),
             ConfirmAction::Forget { name, removed } => {
                 return self.finish_forget(result, &name, removed);
@@ -774,10 +962,12 @@ impl<B: Backend> App<B> {
                         format!("{verb} {alias} (backup: {backup})"),
                     );
                 }
-                if let Some(form) = form {
-                    let mismatches = self.mismatch_lines(&alias, &form.expected());
-                    if !mismatches.is_empty() {
-                        return Mode::Notice(NoticeState::new(mismatches, None));
+                if let Some((form, install)) = edit {
+                    let expected = form.expected();
+                    if let Some(install) = install {
+                        self.queue_key_install(*install, KeyInstallAfter::Edit(expected));
+                    } else {
+                        return self.edit_result(&alias, &expected);
                     }
                 }
             }
@@ -794,6 +984,15 @@ impl<B: Backend> App<B> {
             Err(error) => self.set_status(StatusLevel::Error, error.to_string()),
         }
         Mode::List
+    }
+
+    fn edit_result(&mut self, alias: &str, expected: &ExpectedConfig) -> Mode {
+        let mismatches = self.mismatch_lines(alias, expected);
+        if mismatches.is_empty() {
+            Mode::List
+        } else {
+            Mode::Notice(NoticeState::new(mismatches, None))
+        }
     }
 
     fn finish_forget(

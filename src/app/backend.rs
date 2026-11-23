@@ -29,6 +29,14 @@ pub trait Backend {
     fn effective(&self, alias: &str) -> Result<EffectiveConfig, String>;
     /// Returns the available private keys and their public metadata.
     fn discover_keys(&self) -> Vec<KeyInfo>;
+    /// Reads the public key that belongs to the key file typed in the form.
+    fn read_public_key(&self, _key_file: &str) -> Result<String, String> {
+        Err("public key lookup is unavailable".into())
+    }
+    /// Runs ssh to install a public key. Returns the ssh exit code.
+    fn install_key(&self, _args: &[OsString], _public_key: &str) -> Result<i32, String> {
+        Err("key installation is unavailable".into())
+    }
     /// Returns whether a config file can be changed.
     fn is_writable(&self, path: &Path) -> bool;
     /// Plans removing the known_hosts entries stored under `name`.
